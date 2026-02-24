@@ -1,6 +1,9 @@
 let tournamentIds=[];
 let playerIndex;
 let tournamentToIndex=[];
+let playerInformation;
+let decklist;
+const POKEWALLET_API_KEY = "API_KEY"; // i need a better way to hide this
 
 async function fetchTournamentIDs(limit,game,format){
     let tournamentIds=[];
@@ -56,8 +59,60 @@ async function mapTournamentToIndex(player) {
     return tournamentToIndex;
 }
 
+async function fetchPlayerInformation(tournamentId, playerIndex) {
+    try {
+        const response = await fetch(`https://play.limitlesstcg.com/api/tournaments/${tournamentId}/standings`)
+        if(!response.ok){
+            throw new Error('Network response not ok');
+        }
+        const playerInformation = await response.json();
+        return playerInformation[playerIndex];
+    }
+    catch(error) {
+        console.error('There was an error ', error);
+        return [];
+    }
+}
+
+async function fetchCardInformation(set, collectionNumber) {
+    let cardId = set+"_"+collectionNumber;
+    try {
+        const response = await fetch(`https://api.pokewallet.io/cards/${cardId}`, {method: 'GET', headers: {'X-API-Key': POKEWALLET_API_KEY, 'Content-Type': 'application/json'}});
+        if(!response.ok){
+            throw new Error('Network response not ok');
+        }
+        const cardInformation = await response.json();
+        return cardInformation;
+    }
+    catch(error) {
+        console.error('There was an error ', error);
+        return [];
+    }
+}
+
+// this does not work at all
+async function fetchCardImage(set,collectionNumber) {
+    let cardId = set+"_"+collectionNumber;
+    try {
+        const response = await fetch(`https://api.pokewallet.io/images/${cardId}`, {method: 'GET', headers: {'X-API-Key': POKEWALLET_API_KEY, 'Content-Type': 'application/json'}});
+        if(!response.ok){
+            throw new Error('Network response not ok');
+        }
+        const cardImage = await response.json();
+        return cardImage;
+    }
+    catch(error) {
+        console.error('There was an error ', error);
+        return [];
+    }
+}
+
 tournamentIds = await fetchTournamentIDs(10, "PTCG", "STANDARD");
 tournamentToIndex = await mapTournamentToIndex("Poke Mopos");
-// should return [['699cd82ec9dc8186f760b370, 26]]
-console.log(tournamentIds);
-console.log(tournamentToIndex);
+playerInformation = await fetchPlayerInformation("699cd82ec9dc8186f760b370", 26);
+decklist = playerInformation.decklist;
+console.log(decklist);
+let cardInformation = await fetchCardInformation("TWM","130");
+console.log(cardInformation);
+let cardImage = await fetchCardImage("TWM","130");
+console.log(cardImage);
