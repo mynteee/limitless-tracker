@@ -78,11 +78,25 @@ node src/cli.js stats
 
 ### Going further back
 
-To pull deeper history, scan the whole archive rather than just the recent pages:
+**Just run `crawl` again.** Once the newest events are already stored, a run does not
+stop with nothing to do — it carries on into older pages and extends your history
+backwards, remembering how deep it got so the next run resumes from there. Running it
+repeatedly is therefore a backfill, with no special flag:
 
 ```bash
-node src/cli.js crawl --full --since 2026-01-01
+node src/cli.js crawl
 ```
+
+The output labels which part of the archive each page came from:
+
+```
+  page 1 (recent): 0 new (0 total)
+  page 47 (older): 19 new (19 total)
+  page 48 (older): 50 new (69 total)
+```
+
+`recent` is catching up the front, `older` is extending history. Catching up the front
+always happens, even mid-backfill, so today's events never wait behind a long backfill.
 
 Useful limits:
 
@@ -92,9 +106,13 @@ Useful limits:
 | `--until 2026-06-30` | only events on or before this date |
 | `--limit 500` | stop after 500 tournaments this run |
 | `--max-minutes 60` | stop cleanly after an hour, resume later |
+| `--no-deepen` | only catch up the newest events, never extend backwards |
+| `--full` | re-walk the whole archive from the front, ignoring the cursor |
 
 A full year takes roughly **3 hours** of crawling, and is safe to do in chunks across
-several sessions.
+several sessions. The archive itself goes back to August 2021 — about 251 listing pages,
+or 12,600 tournaments — and once a crawl reaches the end it records that and stops
+extending, since nothing is ever added to the old end.
 
 ---
 

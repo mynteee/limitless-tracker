@@ -79,7 +79,7 @@ jobs:
           node --disable-warning=ExperimentalWarning src/cli.js crawl \
             --game PTCG \
             --format STANDARD \
-            --min-players "${{ github.event.inputs.min_players || '50' }}" \
+            --min-players "${{ github.event.inputs.min_players || '16' }}" \
             --max-minutes "${{ github.event.inputs.max_minutes || '30' }}" \
             ${{ github.event.inputs.since && format('--since {0}', github.event.inputs.since) || '' }} \
             ${{ github.event.inputs.full == 'true' && '--full' || '' }}

@@ -23,6 +23,12 @@ export class Store {
 
             tournamentExists: db.prepare(`SELECT 1 FROM tournament WHERE id = ?`),
 
+            getState: db.prepare(`SELECT value FROM crawl_state WHERE key = ?`),
+            setState: db.prepare(`
+                INSERT INTO crawl_state (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            `),
+
             // Newest first: a partial crawl should cover recent events, which are what
             // players look for. Backed by idx_tournament_pending.
             pending: db.prepare(`
@@ -38,6 +44,11 @@ export class Store {
                 SELECT COUNT(*) AS n FROM tournament
                 WHERE standings_fetched_at IS NULL AND fetch_error IS NULL
                   AND (? IS NULL OR players >= ?)
+            `),
+
+            countTournaments: db.prepare(`
+                SELECT COUNT(*) AS n FROM tournament
+                WHERE (? IS NULL OR game = ?) AND (? IS NULL OR format = ?)
             `),
 
             deleteStandings: db.prepare(`DELETE FROM standing WHERE tournament_id = ?`),
@@ -283,6 +294,19 @@ export class Store {
     getDecklist(handle, tournamentId) {
         const row = this.stmt.playerDecklist.get(handle.toLowerCase(), tournamentId);
         return row?.decklist ? JSON.parse(row.decklist) : null;
+    }
+
+    countTournaments(game = null, format = null) {
+        return this.stmt.countTournaments.get(game, game, format, format).n;
+    }
+
+    /** @returns {string|null} */
+    getState(key) {
+        return this.stmt.getState.get(key)?.value ?? null;
+    }
+
+    setState(key, value) {
+        this.stmt.setState.run(key, String(value));
     }
 
     allPlayers() {
