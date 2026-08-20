@@ -53,7 +53,7 @@ async function mapTournamentToIndex(player) {
     let tournamentToIndex=[];
     for(let i = 0; i < tournamentIds.length; i++) {
         if (await findPlayerIndex(tournamentIds[i],player) != -1) {
-            tournamentToIndex.push([tournamentIds[i],await findPlayerIndex(tournamentIds[i],player)]);
+            tournamentToIndex.push([tournamentIds[i], await findPlayerIndex(tournamentIds[i],player)]);
         }
     }
     return tournamentToIndex;
@@ -107,12 +107,23 @@ async function fetchCardImage(set,collectionNumber) {
     }
 }
 
+async function tryFetchImage() {
+    let cardId;
+    try {
+        const response = await fetch(`https://archives.bulbagarden.net/media/upload/2/26/TeamRocketWobbuffetSVPPromo203.jpg`, {method: 'GET', headers: {'X-API-Key': POKEWALLET_API_KEY, 'Content-Type': 'application/json'}});
+        if(!response.ok){
+            throw new Error('Network response not ok');
+        }
+        const cardImage = await response.json();
+        return cardImage;
+    }
+    catch(error) {
+        console.error('There was an error ', error);
+        return [];
+    }
+}
+
 tournamentIds = await fetchTournamentIDs(10, "PTCG", "STANDARD");
-tournamentToIndex = await mapTournamentToIndex("Poke Mopos");
-playerInformation = await fetchPlayerInformation("699cd82ec9dc8186f760b370", 26);
-decklist = playerInformation.decklist;
-console.log(decklist);
-let cardInformation = await fetchCardInformation("TWM","130");
-console.log(cardInformation);
-let cardImage = await fetchCardImage("TWM","130");
-console.log(cardImage);
+console.log(tournamentIds);
+tournamentToIndex = await mapTournamentToIndex("moujii");
+console.log(tryFetchImage());

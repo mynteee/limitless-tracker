@@ -1,0 +1,11 @@
+# Local crawl database — the source of truth, rebuilt by `npm run crawl`.
+# Never committed: it grows to hundreds of MB and would bloat git history.
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Generated static site (Phase 3)
+dist/
+
+node_modules/
+.env
