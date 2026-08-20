@@ -20,6 +20,7 @@ limitless-tracker
     --until <date>       only tournaments on or before this date
     --all-events         keep events that ran without decklists (off by default)
     --full               discover the whole corpus, not just what is new
+    --no-deepen          only catch up the newest pages; do not extend history
     --max-minutes <N>    stop cleanly after N minutes (for CI job caps)
     --max-requests <N>   stop cleanly after N API requests
 
@@ -55,6 +56,7 @@ const args = parseArgs({
         'min-players': { type: 'string' },
         'max-minutes': { type: 'string' },
         'max-requests': { type: 'string' },
+        'no-deepen': { type: 'boolean' },
         'all-events': { type: 'boolean' },
         since: { type: 'string' },
         until: { type: 'string' },
@@ -163,13 +165,21 @@ async function cmdCrawl() {
         until,
         pendingTarget,
         minPlayers,
+        deepen: !opts['no-deepen'],
         deadline,
         maxRequests,
         signal: controller.signal,
-        onProgress: ({ page, fresh, discovered }) =>
-            process.stdout.write(`  page ${page}: ${fresh} new (${discovered} total)\n`),
+        onProgress: ({ page, fresh, discovered, phase }) =>
+            process.stdout.write(`  page ${page} (${phase}): ${fresh} new (${discovered} total)\n`),
     });
-    console.log(`  ${d.discovered} new tournaments across ${d.pages} pages\n`);
+    console.log(`  ${d.discovered} new tournaments across ${d.pages} pages`);
+    if (d.deepTo !== null) {
+        console.log(`  extended history through listing page ${d.deepTo}`);
+    }
+    if (d.archiveComplete) {
+        console.log('  the archive is fully discovered back to its oldest event');
+    }
+    console.log();
 
     const queued = store.countPending(minPlayers);
     if (queued === 0) {

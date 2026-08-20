@@ -43,6 +43,11 @@ export async function discover(api, store, {
     pendingTarget = Infinity,
     /** Must match the ingest filter, or the queue depth is counted against the wrong set. */
     minPlayers = null,
+    /**
+     * When the newest pages hold nothing new, carry on into older ones rather than
+     * stopping with nothing done. This is what turns repeated runs into a backfill.
+     */
+    deepen = true,
     deadline = Infinity,
     maxRequests = Infinity,
     onProgress = () => {},
@@ -51,43 +56,118 @@ export async function discover(api, store, {
     let discovered = 0;
     let pages = 0;
 
-    for (let page = 1; page <= maxPages; page++) {
-        if (signal?.aborted) break;
-        if (Date.now() >= deadline) break;
-        // Discovery draws on the same budget as ingest, so it has to respect the cap too.
-        if (api.stats.requests >= maxRequests) break;
+    // Cursors are per game+format: how deep discovery has walked, and whether the far
+    // end of the archive has been reached.
+    const scope = `${game}:${format ?? 'ALL'}`;
+    const CURSOR = `discoveryPage:${scope}`;
+    const COMPLETE = `archiveComplete:${scope}`;
 
-        const list = await api.listTournaments({ game, format, limit: PAGE_SIZE, page });
-        pages++;
-        if (list.length === 0) break; // walked off the end of the corpus
+    const outOfBudget = () =>
+        Boolean(signal?.aborted) || Date.now() >= deadline || api.stats.requests >= maxRequests;
+    const targetMet = () =>
+        Number.isFinite(pendingTarget) && store.countPending(minPlayers) >= pendingTarget;
 
-        const inRange = list.filter(
-            (t) => (!since || t.date >= since) && (!until || t.date <= until),
-        );
+    /**
+     * Walk consecutive listing pages from `from`, recording what falls in range.
+     * @returns {Promise<{lastFetched: number, hitEnd: boolean}>}
+     */
+    async function walk(from, { untilKnown, respectTarget, phase }) {
+        let lastFetched = from - 1;
+        let hitEnd = false;
 
-        let fresh = 0;
-        for (const t of inRange) {
-            if (!store.upsertTournament(t)) fresh++;
+        for (let page = from; ; page++) {
+            if (pages >= maxPages || outOfBudget()) break;
+            if (respectTarget && targetMet()) break;
+
+            const list = await api.listTournaments({ game, format, limit: PAGE_SIZE, page });
+            pages++;
+            lastFetched = page;
+            if (list.length === 0) { hitEnd = true; break; }
+
+            const inRange = list.filter(
+                (t) => (!since || t.date >= since) && (!until || t.date <= until),
+            );
+
+            let fresh = 0;
+            for (const t of inRange) {
+                if (!store.upsertTournament(t)) fresh++;
+            }
+            discovered += fresh;
+            onProgress({
+                page, pageSize: list.length, inRange: inRange.length, fresh, discovered, phase,
+            });
+
+            // The listing is ordered newest-first, so once an entire page falls below
+            // the lower bound, everything beyond it is older still.
+            if (since && list[list.length - 1].date < since) break;
+
+            // Nothing new on a page means we have caught up with what we already hold —
+            // but only conclude that from a page that actually had rows in range, or an
+            // `until` bound would stop discovery before it reached the range at all.
+            if (untilKnown && fresh === 0 && inRange.length > 0) break;
+            if (list.length < PAGE_SIZE) { hitEnd = true; break; }
         }
-        discovered += fresh;
-        onProgress({ page, pageSize: list.length, inRange: inRange.length, fresh, discovered });
 
-        // The listing is ordered newest-first, so once an entire page falls below the
-        // lower bound, everything beyond it is older still. Stop rather than paging on.
-        if (since && list[list.length - 1].date < since) break;
-
-        // Enough work queued to satisfy this run; more paging would only add events
-        // that this run is never going to fetch anyway.
-        if (Number.isFinite(pendingTarget) && store.countPending(minPlayers) >= pendingTarget) break;
-
-        // Nothing new on a page means we have caught up with what we already hold —
-        // but only conclude that from a page that actually had rows in range, or an
-        // `until` bound would stop discovery before it reached the range at all.
-        if (stopWhenKnown && fresh === 0 && inRange.length > 0) break;
-        if (list.length < PAGE_SIZE) break; // short page = last page
+        return { lastFetched, hitEnd };
     }
 
-    return { discovered, pages };
+    // Phase A — the newest pages, picking up whatever appeared since the last run.
+    //
+    // This deliberately ignores the queue target: catching up the front costs a page or
+    // two and is what keeps the site current, so it has to happen even mid-backfill
+    // with thousands already queued. The exception is an initial fill, where there is
+    // no front to catch up and the nothing-new stop can never fire, leaving the target
+    // as the only thing bounding the walk.
+    const initialFill = store.countTournaments(game, format ?? null) === 0;
+    const recent = await walk(1, {
+        untilKnown: stopWhenKnown,
+        respectTarget: initialFill,
+        phase: stopWhenKnown ? 'recent' : 'full',
+    });
+
+    // Phase B — carry on into older pages.
+    //
+    // Phase A stops as soon as a page holds nothing new, which on a back-to-back run is
+    // page 1, leaving the run with nothing to do at all. Extending backwards instead
+    // means every run makes progress: once the front is current the remaining budget
+    // goes into filling in history, and the backfill completes over successive runs
+    // without anyone having to ask for it.
+    //
+    // Resuming from a remembered page number is safe because drift only goes one way.
+    // Tournaments are added at the *front*, which pushes older ones to HIGHER page
+    // numbers, so re-reading page N returns content newer than or equal to what it held
+    // last time — overlap, never a gap. One page of margin absorbs the rare reverse
+    // drift from a deleted tournament.
+    let deepFrom = null;
+    let deepTo = null;
+
+    if (deepen && stopWhenKnown && store.getState(COMPLETE) !== '1'
+        && !targetMet() && !outOfBudget()) {
+        const saved = Number(store.getState(CURSOR) ?? 0);
+        deepFrom = Math.max(1, Math.max(saved, recent.lastFetched) - 1);
+
+        const older = await walk(deepFrom, {
+            untilKnown: false,
+            respectTarget: true,
+            phase: 'older',
+        });
+
+        if (older.lastFetched >= deepFrom) {
+            deepTo = older.lastFetched;
+            store.setState(CURSOR, deepTo);
+            // Nothing is ever added to the old end, so reaching it once is permanent.
+            if (older.hitEnd) store.setState(COMPLETE, '1');
+        }
+    }
+
+    return {
+        discovered,
+        pages,
+        recentPages: Math.max(0, recent.lastFetched),
+        deepFrom,
+        deepTo,
+        archiveComplete: store.getState(COMPLETE) === '1',
+    };
 }
 
 /**
