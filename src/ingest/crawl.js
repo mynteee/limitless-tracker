@@ -44,6 +44,7 @@ export async function discover(api, store, {
     /** Must match the ingest filter, or the queue depth is counted against the wrong set. */
     minPlayers = null,
     deadline = Infinity,
+    maxRequests = Infinity,
     onProgress = () => {},
     signal,
 } = {}) {
@@ -53,6 +54,8 @@ export async function discover(api, store, {
     for (let page = 1; page <= maxPages; page++) {
         if (signal?.aborted) break;
         if (Date.now() >= deadline) break;
+        // Discovery draws on the same budget as ingest, so it has to respect the cap too.
+        if (api.stats.requests >= maxRequests) break;
 
         const list = await api.listTournaments({ game, format, limit: PAGE_SIZE, page });
         pages++;

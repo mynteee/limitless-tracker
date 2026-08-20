@@ -23,7 +23,7 @@ on:
       min_players:
         description: 'Skip events smaller than this'
         required: false
-        default: '50'
+        default: '16'
       since:
         description: 'Only tournaments on or after this date (YYYY-MM-DD), optional'
         required: false

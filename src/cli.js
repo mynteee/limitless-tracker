@@ -81,6 +81,12 @@ if (!command || opts.help) {
 
 const num = (v, fallback) => (v === undefined ? fallback : Number(v));
 
+/**
+ * How far ahead a plain `crawl` may discover when nothing bounds the run. Enough to
+ * keep a session busy without paging the entire archive before fetching anything.
+ */
+const DEFAULT_DISCOVERY_TARGET = 500;
+
 const db = openDb(opts.db);
 const store = new Store(db);
 
@@ -117,6 +123,21 @@ async function cmdCrawl() {
         ? Date.now() + Number(opts['max-minutes']) * 60_000
         : Infinity;
 
+    // Discovery and ingest draw on one shared request budget. Left unbounded, a first
+    // run against an empty database spends the whole budget queueing tournaments it
+    // will never reach — 2,600 discovered, zero fetched, and a site deployed with no
+    // data in it. So cap how far ahead discovery may run: there is no value in queueing
+    // more work than this run could possibly fetch. `--full` opts out for backfills.
+    const affordable = Math.min(
+        maxRequests,
+        // At the 50-per-5-minute limit a request costs 6 seconds.
+        opts['max-minutes'] ? Math.ceil((Number(opts['max-minutes']) * 60_000) / 6_000) : Infinity,
+        num(opts.limit, Infinity),
+    );
+    const pendingTarget = opts.full
+        ? Infinity
+        : (Number.isFinite(affordable) ? affordable : DEFAULT_DISCOVERY_TARGET);
+
     // Ctrl-C stops after the current tournament commits, rather than mid-write.
     const controller = new AbortController();
     process.on('SIGINT', () => {
@@ -140,10 +161,10 @@ async function cmdCrawl() {
         stopWhenKnown: !opts.full,
         since,
         until,
-        // `--full` means "scan everything", so it opts out of the queue-depth stop.
-        pendingTarget: opts.full ? Infinity : num(opts.limit, Infinity),
+        pendingTarget,
         minPlayers,
         deadline,
+        maxRequests,
         signal: controller.signal,
         onProgress: ({ page, fresh, discovered }) =>
             process.stdout.write(`  page ${page}: ${fresh} new (${discovered} total)\n`),

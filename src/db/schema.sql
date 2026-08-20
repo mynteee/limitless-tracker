@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS tournament (
 
 CREATE INDEX IF NOT EXISTS idx_tournament_date ON tournament(date DESC);
 
+-- Small key/value scratchpad for the crawler. Currently holds, per game+format, how
+-- deep into the listing discovery has walked, so a run that finds nothing new at the
+-- front can carry on extending history backwards instead of doing nothing.
+CREATE TABLE IF NOT EXISTS crawl_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
 -- Partial index: the crawler asks "what is left to do?" on every batch, and this
 -- keeps that query proportional to the work remaining rather than the corpus size.
 CREATE INDEX IF NOT EXISTS idx_tournament_pending
