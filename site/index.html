@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Limitless Tracker</title>
+<meta name="description" content="Historic decks and placements for Pokémon TCG players across Limitless tournaments.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="#/">limitless<span>tracker</span></a>
+  <form class="search" id="search-form" role="search" autocomplete="off">
+    <input id="q" type="search" placeholder="Search a player by name or handle…" aria-label="Search players" spellcheck="false">
+  </form>
+</header>
+
+<main id="view" aria-live="polite"></main>
+
+<footer class="foot">
+  <span id="meta-line"></span>
+  <span>Data from <a href="https://play.limitlesstcg.com" target="_blank" rel="noopener">Limitless</a>
+  · sprites from <a href="https://github.com/msikma/pokesprite" target="_blank" rel="noopener">pokesprite</a></span>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

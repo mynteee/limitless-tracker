@@ -1,0 +1,114 @@
+name: Crawl and publish
+
+# Keeps the corpus current and redeploys the static site, without anyone running it
+# by hand.
+#
+# The site is uploaded as a Pages artifact rather than committed to a branch, so
+# hundreds of megabytes of tournament data never enter git history. The database
+# itself is carried between runs in the Actions cache.
+#
+# Requires: repository Settings > Pages > Source set to "GitHub Actions".
+
+on:
+  schedule:
+    # 05:00 UTC daily. A day of PTCG Standard is roughly 50-100 new tournaments,
+    # about 10 minutes of crawling at the 50-requests-per-5-minutes limit.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      max_minutes:
+        description: 'Stop cleanly after this many minutes'
+        required: false
+        default: '30'
+      min_players:
+        description: 'Skip events smaller than this'
+        required: false
+        default: '50'
+      since:
+        description: 'Only tournaments on or after this date (YYYY-MM-DD), optional'
+        required: false
+        default: ''
+      decklist_months:
+        description: 'Publish decklists only from the last N months (blank = all)'
+        required: false
+        default: ''
+      full:
+        description: 'Backfill: page through the entire corpus, not just what is new'
+        type: boolean
+        required: false
+        default: false
+
+# Two overlapping crawls would duplicate work, compete for the same rate-limit
+# budget, and race each other writing the cache. Queue them instead.
+concurrency:
+  group: crawl
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    # GitHub hard-kills a job at 6 hours. Stay under it, and have the crawler stop
+    # itself earlier still (--max-minutes below) so it exits cleanly rather than
+    # being killed mid-request.
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Rolling cache: every run writes a new key and restores the newest previous
+      # one, because actions/cache will not overwrite an existing key.
+      - name: Restore tournament database
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: limitless-db-${{ github.run_id }}
+          restore-keys: |
+            limitless-db-
+
+      - name: Crawl
+        run: |
+          node --disable-warning=ExperimentalWarning src/cli.js crawl \
+            --game PTCG \
+            --format STANDARD \
+            --min-players "${{ github.event.inputs.min_players || '50' }}" \
+            --max-minutes "${{ github.event.inputs.max_minutes || '30' }}" \
+            ${{ github.event.inputs.since && format('--since {0}', github.event.inputs.since) || '' }} \
+            ${{ github.event.inputs.full == 'true' && '--full' || '' }}
+
+      - name: Build static site
+        run: |
+          node --disable-warning=ExperimentalWarning src/cli.js build \
+            ${{ github.event.inputs.decklist_months && format('--decklist-months {0}', github.event.inputs.decklist_months) || '' }}
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '```'
+            node --disable-warning=ExperimentalWarning src/cli.js stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: crawl
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

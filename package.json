@@ -1,0 +1,21 @@
+{
+  "name": "limitless-tracker",
+  "version": "0.1.0",
+  "description": "Look up a player's historic decks and placements across Limitless TCG tournaments.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "crawl": "node --disable-warning=ExperimentalWarning src/cli.js crawl",
+    "lookup": "node --disable-warning=ExperimentalWarning src/cli.js lookup",
+    "search": "node --disable-warning=ExperimentalWarning src/cli.js search",
+    "stats": "node --disable-warning=ExperimentalWarning src/cli.js stats",
+    "cli": "node --disable-warning=ExperimentalWarning src/cli.js",
+    "build": "node --disable-warning=ExperimentalWarning src/cli.js build",
+    "serve": "node --disable-warning=ExperimentalWarning src/cli.js serve",
+    "prune": "node --disable-warning=ExperimentalWarning src/cli.js prune",
+    "refresh-sprites": "node scripts/refresh-pokesprite.mjs"
+  }
+}
