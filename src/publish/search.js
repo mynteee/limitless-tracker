@@ -14,14 +14,36 @@ export function shard(term) {
     return `${String(term).toLowerCase()}__`.slice(0, 2);
 }
 
-/** Every bucket key a player should be indexed under. */
+/**
+ * Every bucket key a player should be indexed under.
+ *
+ * Indexes every two-character substring, not just the leading pair, so a query can
+ * match from the middle of a word: "essica" resolves to bucket "es" and finds
+ * "Jessica". Indexing only prefixes would put that player in "je" alone, and the
+ * bucket for what was typed would not contain them.
+ *
+ * Names are split into words first, so n-grams never straddle a space. A multi-word
+ * query still works, because the bucket comes from the first two characters typed —
+ * "von bak" looks in "vo", where the player is indexed via "von".
+ */
 export function indexKeys(handle, names = []) {
-    const keys = new Set([shard(handle)]);
+    const keys = new Set();
+
+    const addGrams = (word) => {
+        if (!word) return;
+        // A one-character word has no bigram; index it under its padded shard so it is
+        // still reachable, matching how `shard` resolves a one-character query.
+        if (word.length < 2) {
+            keys.add(shard(word));
+            return;
+        }
+        for (let i = 0; i <= word.length - 2; i++) keys.add(word.slice(i, i + 2));
+    };
+
+    addGrams(String(handle).toLowerCase());
     for (const name of names) {
         if (!name) continue;
-        for (const word of String(name).toLowerCase().split(/[^a-z0-9]+/)) {
-            if (word) keys.add(shard(word));
-        }
+        for (const word of String(name).toLowerCase().split(/[^a-z0-9]+/)) addGrams(word);
     }
     return keys;
 }

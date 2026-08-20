@@ -280,7 +280,7 @@ for "player not found".
 ```
 data/meta.json                     build info and coverage
 data/icons.json                    which CDN each archetype sprite comes from
-data/search/<pp>.json              prefix index over handles and display names
+data/search/<pp>.json              n-gram index over handles and display names
 data/players/<pp>/<handle>.json    placements and archetypes
 data/decks/<pp>/<handle>.json      full decklists, fetched on demand
 ```
@@ -290,9 +290,19 @@ Placements and decklists are split because decklists are **93%** of a player's p
 the first two characters of the handle, so a lookup is a single small request.
 
 The site imports `search.js`, the same module the index was built with, so the client and
-the data cannot drift apart. Note that the site matches on word prefixes while the CLI
-matches substrings anywhere, so `essica` finds "Jessica" in the terminal but not in the
-browser.
+the data cannot drift apart.
+
+The index is keyed on **every two-character substring** of the handle and of each word of
+each name, not just the leading pair, so the site matches substrings anywhere the CLI does
+— `essica` finds "Jessica", `alderon` finds `@josecalderon77`. Indexing only prefixes put
+those players in a bucket the query never looked in. N-grams are split per word so they
+never straddle a space; a multi-word query still resolves, because the bucket comes from
+the first two characters typed.
+
+This costs about 7.6x the index size (3.4 MB against 449 KB at the current corpus). The
+distribution is very skewed but the shape is fine: the median bucket is 0.7 KB and the
+hottest — `an` — is 56 KB, and a bucket is fetched once and then cached. Queries shorter
+than two characters are rejected outright, since they cannot address a bucket.
 
 ### Card images
 
