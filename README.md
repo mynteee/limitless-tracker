@@ -7,6 +7,11 @@ and the exact deck they brought.
 Search a name or handle, and you get their full record, best finishes, archetypes over
 time, and each decklist rendered the way Limitless renders it.
 
+### **[→ mynteee.github.io/limitless-tracker](https://mynteee.github.io/limitless-tracker/)**
+
+Already live, kept current by a daily crawl. **Nothing to install** — everything below is
+only for running your own copy.
+
 ---
 
 ## Using the site
@@ -36,6 +41,12 @@ a row opens that decklist in place. Reprints share one page — see [Reprints](#
 
 ## Running it locally
 
+You do not need to. [The hosted site](https://mynteee.github.io/limitless-tracker/) is the
+same build from the same data, and updates itself daily.
+
+Run your own copy if you want results newer than the last daily build, a different crawl
+policy (other games, formats or event sizes), or somewhere to develop against.
+
 ### Requirements
 
 **Node 22.5 or newer. That is the entire dependency list** — there is no `npm install`
@@ -48,8 +59,9 @@ node --version
 ### Getting the data
 
 **A fresh clone contains no tournament data.** The database and the built site are both
-gitignored, because a year of decklists runs to several hundred megabytes. You build your
-own copy — which is also how you get results newer than whatever was last published.
+gitignored, because a year of decklists runs to several hundred megabytes — which is why
+[the hosted site](https://mynteee.github.io/limitless-tracker/) exists and why a local copy
+starts empty.
 
 ```bash
 node src/cli.js crawl --limit 200
