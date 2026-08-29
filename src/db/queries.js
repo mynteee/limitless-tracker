@@ -624,6 +624,51 @@ export class Store {
         }
     }
 
+    /**
+     * Tournaments whose decklists are stored but absent from the card index.
+     *
+     * `saveStandings` indexes as it goes, so this is only ever non-empty for events
+     * crawled before the card index existed — which is every event in a database that
+     * predates it. Left unrepaired the index still answers, just from a fraction of the
+     * corpus: averages come out near zero because the denominator counts every deck
+     * while the numerator only sees the indexed ones.
+     */
+    unindexedTournaments() {
+        return this.db.prepare(`
+            SELECT t.id FROM tournament t
+            -- Keyed off decklists actually stored, not the has_decklists flag. The flag
+            -- can outlive its rows: 34 events here carry has_decklists = 1 with zero
+            -- standings, and trusting it would hand them to the repair on every single
+            -- build, which then finds nothing to index and leaves them "missing" forever.
+            WHERE EXISTS (
+                SELECT 1 FROM standing s
+                WHERE s.tournament_id = t.id AND s.decklist IS NOT NULL
+            )
+            AND NOT EXISTS (SELECT 1 FROM card_play cp WHERE cp.tournament_id = t.id)
+        `).all().map((r) => r.id);
+    }
+
+    /** Index only what is missing. Cheap when nothing is, unlike a full rebuild. */
+    repairCardIndex(onProgress = () => {}) {
+        const missing = this.unindexedTournaments();
+        if (missing.length === 0) return 0;
+
+        this.db.exec('BEGIN');
+        try {
+            let done = 0;
+            for (const id of missing) {
+                this.indexCards(id);
+                this.stmt.indexDecks.run(id);
+                if (++done % 100 === 0) onProgress({ done, total: missing.length });
+            }
+            this.db.exec('COMMIT');
+        } catch (err) {
+            this.db.exec('ROLLBACK');
+            throw err;
+        }
+        return missing.length;
+    }
+
     /** Drop and rebuild the whole card index. Derived data — safe to redo at any time. */
     reindexCards() {
         this.db.exec('BEGIN');

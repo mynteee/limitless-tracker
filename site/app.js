@@ -62,6 +62,9 @@ function deckIcons(deck, cls = '') {
 
 /* ── date ranges ──────────────────────────────────────────────────────────── */
 
+/** Days covered by the time filters on first load. */
+const DEFAULT_WINDOW = 90;
+
 const dayMs = 86_400_000;
 const isoDay = (d) => new Date(d).toISOString().slice(0, 10);
 
@@ -522,7 +525,12 @@ async function renderArchetype(id, preselectVariant = null) {
     }
 
     // Both selectors only filter data already fetched, so switching is instant.
-    let win = arch.windows.find((w) => String(w) in arch.averages) ?? 0;
+    // 90 days is the default: long enough to be a real sample, recent enough to
+    // describe the current meta. An archetype with nothing that recent falls back to
+    // whatever window it does have rather than opening on an empty page.
+    let win = (String(DEFAULT_WINDOW) in arch.averages ? DEFAULT_WINDOW : null)
+        ?? arch.windows.find((w) => String(w) in arch.averages)
+        ?? 0;
     let variant = arch.variants.some((v) => v.id === preselectVariant) ? preselectVariant : 'all';
     let showFringe = false;
     let custom = null;   // set while a custom range is active
@@ -702,7 +710,7 @@ async function renderArchetypeList() {
 
     // Every control filters data already fetched — one small file holds the whole list
     // with its variants and per-window counts, so switching is instant.
-    let win = 0;
+    let win = DEFAULT_WINDOW;
     let split = false;
     let custom = null;       // set while the Custom window is active
     let dailyCounts = null;  // archetypes-days.json, fetched on first custom use

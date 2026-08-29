@@ -131,6 +131,15 @@ fetch('data/meta.json').then(function (r) { return r.json(); }).then(function (m
 export function build(store, { outDir = 'dist', decklistMonths = null, onProgress = () => {} } = {}) {
     const dataDir = join(outDir, 'data');
 
+    // Card pages and every archetype average are read out of the card index, so it has
+    // to cover the whole corpus before anything is written. A partial index does not
+    // fail loudly — it publishes averages computed from a fraction of the decks, which
+    // look plausible but are wrong by whatever fraction is missing. Repairing here means
+    // a database that predates the index (the scheduled crawl's, for one) fixes itself
+    // on the next build rather than shipping bad numbers.
+    const repaired = store.repairCardIndex((p) => onProgress({ type: 'repair', ...p }));
+    if (repaired > 0) onProgress({ type: 'repaired', tournaments: repaired });
+
     // Wipe only the generated subtrees, so a pruned or renamed player cannot leave a
     // stale file behind that the site would still happily serve.
     for (const sub of ['players', 'decks', 'search', 'cards', 'archetypes']) {

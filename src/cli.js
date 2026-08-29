@@ -362,6 +362,8 @@ function cmdBuild() {
         decklistMonths,
         onProgress: (p) => {
             if (p.type === 'unsafe') console.warn(`  skipped unsafe handle: ${JSON.stringify(p.handle)}`);
+            else if (p.type === 'repair') process.stdout.write(`  indexing missing cards: ${p.done}/${p.total}   `);
+            else if (p.type === 'repaired') console.log(`  card index repaired: ${p.tournaments} tournaments were missing   `);
             else if (p.type === 'window') console.log(`  averaged ${p.decks} decks over the ${p.days || 'all-time'} window`);
             else console.log(`  ${p.written}/${p.total} ${p.type}`);
         },
