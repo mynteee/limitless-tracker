@@ -95,9 +95,11 @@ async function runSearch(term) {
         view.innerHTML = `<p class="empty">Type at least two characters.</p>`;
         return;
     }
+    // Cards are deliberately excluded here and searched from their own page: mixing
+    // 2,160 card names into player results buries the people someone came to find.
     const bucket = await getJson(`data/search/${shard(t)}.json`);
     const all = (bucket ?? [])
-        .filter((e) => matchesEntry(e, t))
+        .filter((e) => e.type !== 'card' && matchesEntry(e, t))
         .sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events);
 
     if (all.length === 0) {
@@ -107,7 +109,7 @@ async function runSearch(term) {
 
     // One index holds all three kinds, so a card can sit well below a wall of players
     // who happen to share a word. These narrow the results to one kind.
-    const counts = { all: all.length, player: 0, deck: 0, card: 0 };
+    const counts = { all: all.length, player: 0, deck: 0 };
     for (const e of all) counts[e.type ?? 'player']++;
 
     // A filter with no matches for this term would strand the user on an empty list.
@@ -118,7 +120,7 @@ async function runSearch(term) {
         : all.filter((e) => (e.type ?? 'player') === searchType)
     ).slice(0, 60);
 
-    const tabs = [['all', 'All'], ['player', 'Players'], ['deck', 'Decks'], ['card', 'Cards']]
+    const tabs = [['all', 'All'], ['player', 'Players'], ['deck', 'Decks']]
         .map(([key, label]) => `<button class="chip ${searchType === key ? 'on' : ''}"
             data-type="${key}" ${counts[key] === 0 ? 'disabled' : ''}>
             ${label} <span class="n">${counts[key]}</span></button>`)
@@ -257,6 +259,11 @@ async function toggleDecklist(btn, handle) {
         return;
     }
 
+    showDecklist(box, list);
+}
+
+/** Draw a decklist with its List/Cards toggle. Shared by every page that shows one. */
+function showDecklist(box, list) {
     const draw = (mode) => {
         box.innerHTML = `
           <div class="dl-tools">
@@ -271,6 +278,51 @@ async function toggleDecklist(btn, handle) {
             b.addEventListener('click', () => draw(b.dataset.mode)));
     };
     draw('list');
+}
+
+/**
+ * Expand the decklist behind a result row, in place.
+ *
+ * Rows on the card and archetype pages are about the deck that was played, so opening
+ * one shows that list rather than navigating away to the player who brought it. The
+ * player is still one click further in, from the row's own link.
+ */
+async function toggleRowDecklist(row) {
+    const open = row.nextElementSibling;
+    if (open?.classList.contains('row-decklist')) {
+        open.remove();
+        row.setAttribute('aria-expanded', 'false');
+        return;
+    }
+    // Only one open at a time, or the table turns into a wall of lists.
+    row.parentElement.querySelectorAll('.row-decklist').forEach((el) => el.remove());
+    row.parentElement.querySelectorAll('.crow[aria-expanded="true"]')
+        .forEach((el) => el.setAttribute('aria-expanded', 'false'));
+
+    row.setAttribute('aria-expanded', 'true');
+    row.insertAdjacentHTML('afterend',
+        `<div class="row-decklist"><p class="muted">Loading…</p></div>`);
+    const box = row.nextElementSibling;
+
+    const { handle, tid } = row.dataset;
+    const decks = await getJson(`data/decks/${shard(handle)}/${encodeURIComponent(handle)}.json`);
+    const list = decks?.lists?.[tid];
+    if (!list) {
+        box.innerHTML = `<p class="muted">No decklist published for this entry.</p>`;
+        return;
+    }
+    showDecklist(box, list);
+}
+
+/** Wire every .crow inside a container to expand its decklist. */
+function wireRows(container) {
+    container.querySelectorAll('.crow').forEach((row) => {
+        row.addEventListener('click', (e) => {
+            // The player link inside the row still navigates.
+            if (e.target.closest('a')) return;
+            toggleRowDecklist(row);
+        });
+    });
 }
 
 /**
@@ -314,12 +366,14 @@ function renderCards(list) {
 
 /** Rows for one tournament, laid out like Limitless' "Decklists that include this card". */
 function cardResultRows(rows) {
-    return rows.map((r) => `<a class="crow" href="#/p/${encodeURIComponent(r.handle)}">
-        <span class="place">${r.placing === null ? '—' : ordinal(r.placing)}</span>
+    return rows.map((r) => `<div class="crow" role="button" tabindex="0" aria-expanded="false"
+        data-handle="${esc(r.handle)}" data-tid="${esc(r.tournamentId)}">
+        <span class="place">${r.placing === null ? '—' : ordinal(r.placing)}${
+            r.fieldSize ? `<span class="of">/${r.fieldSize}</span>` : ''}</span>
         <span class="deck">${deckIcons(r.deck)}<span>${esc(r.deck?.name ?? 'Other')}</span></span>
-        <span class="who">${esc(r.name)}</span>
+        <a class="who" href="#/p/${encodeURIComponent(r.handle)}">${esc(r.name)}</a>
         <span class="qty-inline">${r.count}&times;</span>
-      </a>`).join('');
+      </div>`).join('');
 }
 
 async function renderCard(id) {
@@ -369,6 +423,8 @@ async function renderCard(id) {
         ? `<p class="muted note">Showing the ${card.results.length} most recent of
            ${card.decks.toLocaleString()} decklists.</p>` : ''}
     `;
+
+    wireRows(view);
 
     const btn = document.getElementById('card-more');
     if (btn) {
@@ -434,12 +490,13 @@ function renderAverage(cards, showAll = false) {
 }
 
 function archetypeResultRows(rows) {
-    return rows.map((r) => `<a class="crow" href="#/p/${encodeURIComponent(r.handle)}">
-        <span class="place">${r.placing === null ? '—' : ordinal(r.placing) + '/' + (r.fieldSize ?? '?')}</span>
+    return rows.map((r) => `<div class="crow" role="button" tabindex="0" aria-expanded="false"
+        data-handle="${esc(r.handle)}" data-tid="${esc(r.tournamentId)}">
+        <span class="place">${r.placing === null ? '—' : ordinal(r.placing) + '<span class="of">/' + (r.fieldSize ?? '?') + '</span>'}</span>
         <span class="deck">${deckIcons({ icons: r.icons })}<span>${esc(r.variantName ?? '')}</span></span>
-        <span class="who">${esc(r.name)}</span>
+        <a class="who" href="#/p/${encodeURIComponent(r.handle)}">${esc(r.name)}</a>
         <span class="ev">${esc(r.tournament)}</span>
-      </a>`).join('');
+      </div>`).join('');
 }
 
 async function renderArchetype(id) {
@@ -466,7 +523,8 @@ async function renderArchetype(id) {
             ? arch.results
             : arch.results.filter((r) => r.variant === variant);
 
-        document.getElementById('arch-body').innerHTML = `
+        const body = document.getElementById('arch-body');
+        body.innerHTML = `
           <div class="controls">
             <div class="chips" id="win-chips">
               ${arch.windows.filter((w) => String(w) in arch.averages).map((w) => `
@@ -495,6 +553,7 @@ async function renderArchetype(id) {
                  ${archetypeResultRows(results)}
                </div>`
             : '<p class="empty">No placements for this selection.</p>'}`;
+        wireRows(body);
 
         document.querySelectorAll('#win-chips .chip').forEach((b) =>
             b.addEventListener('click', () => { win = Number(b.dataset.win); draw(); }));
@@ -514,6 +573,58 @@ async function renderArchetype(id) {
       </div>
       <div id="arch-body"></div>`;
     draw();
+}
+
+/**
+ * Card search, on its own page with its own box.
+ *
+ * Reads the same published buckets as the main search, filtered to cards, so nothing
+ * extra is published for it.
+ */
+async function renderCardSearch(initial = '') {
+    view.innerHTML = `
+      <h1 class="page-title">Cards</h1>
+      <p class="muted">Search any card to see the decklists that ran it.</p>
+      <form id="card-form" class="inline-search" role="search">
+        <input id="cq" type="search" placeholder="Card name or set code, e.g. MEG-114…"
+               aria-label="Search cards" spellcheck="false" value="${esc(initial)}">
+      </form>
+      <div id="card-results"></div>`;
+
+    const box = document.getElementById('card-results');
+    const cq = document.getElementById('cq');
+
+    const run = async (term) => {
+        const t = term.trim().toLowerCase();
+        if (t.length < 2) {
+            box.innerHTML = `<p class="empty">Type at least two characters.</p>`;
+            return;
+        }
+        const bucket = await getJson(`data/search/${shard(t)}.json`);
+        const hits = (bucket ?? [])
+            .filter((e) => e.type === 'card' && matchesEntry(e, t))
+            .sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events)
+            .slice(0, 80);
+
+        box.innerHTML = hits.length === 0
+            ? `<p class="empty">No cards matching “${esc(term)}”.</p>`
+            : `<div class="results">${hits.map((e) => `
+                <a class="result" href="#/c/${encodeURIComponent(e.handle)}">
+                  <img class="mini-card" src="${esc(cardImage(...e.handle.split('-')))}" alt="" loading="lazy">
+                  <span class="name">${esc(e.name)}</span>
+                  <span class="handle">${esc(e.handle)}</span>
+                  <span class="spacer"></span>
+                  <span class="count">${e.events.toLocaleString()} decklists</span>
+                </a>`).join('')}</div>`;
+    };
+
+    document.getElementById('card-form').addEventListener('submit', (e) => e.preventDefault());
+    let t;
+    cq.addEventListener('input', () => {
+        clearTimeout(t);
+        t = setTimeout(() => run(cq.value), 120);
+    });
+    if (initial) run(initial); else cq.focus();
 }
 
 async function renderArchetypeList() {
@@ -542,6 +653,7 @@ function route() {
     const player = hash.match(/^\/p\/(.+)$/);
     const card = hash.match(/^\/c\/(.+)$/);
     const deck = hash.match(/^\/d\/(.+)$/);
+    const cardSearch = hash === '/cards';
     if (player) {
         input.value = '';
         renderPlayer(decodeURIComponent(player[1]));
@@ -554,6 +666,9 @@ function route() {
     } else if (hash === '/decks') {
         input.value = '';
         renderArchetypeList();
+    } else if (cardSearch) {
+        input.value = '';
+        renderCardSearch();
     } else if (input.value.trim()) {
         runSearch(input.value);
     } else {
@@ -573,7 +688,8 @@ function renderHome() {
         ${c.archetypes ? `<span><b>${c.archetypes.toLocaleString()}</b> archetypes</span>` : ''}
         ${c.cards ? `<span><b>${c.cards.toLocaleString()}</b> cards</span>` : ''}
       </div>` : ''}
-      <p class="browse"><a href="#/decks">Browse all archetypes →</a></p>
+      <p class="browse"><a href="#/decks">Browse all archetypes →</a>
+        <a href="#/cards">Search cards →</a></p>
     </div>`;
 }
 

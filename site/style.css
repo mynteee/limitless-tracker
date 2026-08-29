@@ -450,3 +450,24 @@ a.crow:hover { background: var(--accent-soft); }
 .search-tabs { margin-bottom: .75rem; }
 .search-tabs .chip[disabled] { opacity: .4; cursor: default; }
 .search-tabs .chip[disabled]:hover { background: transparent; }
+
+/* Field size beside a placement. */
+.crow .of { opacity: .55; font-weight: 400; }
+
+/* Expandable result rows: the row itself opens the list, the player name still links. */
+.crow[role="button"] { cursor: pointer; }
+.crow[role="button"]:hover { background: var(--hover, rgba(127,127,127,.08)); }
+.crow[aria-expanded="true"] { background: var(--hover, rgba(127,127,127,.12)); }
+.crow a.who { color: inherit; text-decoration: none; }
+.crow a.who:hover { text-decoration: underline; }
+.row-decklist { padding: .75rem 1rem 1rem; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); }
+
+/* Card search page. */
+.inline-search { margin: .75rem 0 1rem; }
+.inline-search input {
+  width: 100%; padding: .6rem .8rem; font: inherit;
+  border: 1px solid var(--line, rgba(127,127,127,.35)); border-radius: 8px;
+  background: transparent; color: inherit;
+}
+.mini-card { width: 30px; height: 42px; object-fit: cover; border-radius: 3px; flex: none; }
+.browse a + a { margin-left: 1.25rem; }
