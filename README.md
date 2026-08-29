@@ -24,8 +24,9 @@ decklist: **List** shows it in Limitless' own format, **Cards** shows the actual
 **Split variants** toggle that flattens the list to one row per variant ranked across all
 archetypes. An archetype page shows the average decklist as card art badged with the mean
 number of copies, plus its recent placements. Both scope to the last 30 days, 90 days or
-all time, and filter to a single variant — every variant has its own average however few
-decks it has, with the sample size shown rather than being silently replaced.
+all time, or a **Custom…** range given either as "last N days" or as explicit from/to
+dates. Every variant has its own average however few decks it has, with the sample size
+shown rather than being silently replaced.
 
 **Cards** — search them at `#/cards`. A card page lists the decklists that ran it, newest
 event first and sorted by placing, with the rest of its history behind a toggle. Clicking
@@ -119,9 +120,13 @@ Useful limits:
 | `--full` | re-walk the whole archive from the front, ignoring the cursor |
 
 A full year takes roughly **3 hours** of crawling, and is safe to do in chunks across
-several sessions. The archive itself goes back to August 2021 — about 251 listing pages,
-or 12,600 tournaments — and once a crawl reaches the end it records that and stops
-extending, since nothing is ever added to the old end.
+several sessions.
+
+**Nothing before 1 January 2020 is ever fetched.** Limitless keeps adding history at the
+old end, so an unbounded backfill has no natural stopping point; the floor gives it one,
+and a repeated `crawl` eventually finishes rather than running forever. A tighter
+`--since` still applies on top of it. Once a crawl reaches the floor it records that and
+stops extending, since nothing below it will ever appear.
 
 ---
 
@@ -325,6 +330,22 @@ token bucket *and* resyncs from the server's `RateLimit` headers after each call
 whichever view is stricter, so it adapts automatically if Limitless changes the quota.
 Errors are typed and carry a `retryable` flag, so a network failure can never be mistaken
 for "player not found".
+
+### Custom date ranges
+
+Precomputed windows cannot answer an arbitrary range, so each archetype ships a sidecar
+of **day buckets** — `archetypes/<id>.days.json`, plus `archetypes-days.json` for the
+list — fetched only when someone actually picks a custom range. Day granularity is what
+makes "last N days" exact.
+
+They cover the most recent **400 days** on purpose. Unbounded they would grow with the
+whole archive rather than staying fixed like the windows, and the largest archetype's
+sidecar would reach tens of megabytes once the backfill runs to the 2020 floor. Bounded,
+the worst case is 368 KB (Dragapult) and it stays there. Anything older is still covered
+by the all-time window.
+
+A custom range and its equivalent window agree to about 0.4% — windows cut at a timestamp,
+custom ranges snap to whole days.
 
 ### Published data layout
 

@@ -20,6 +20,16 @@ const CARD_RESULT_LIMIT = 150;
 const ARCHETYPE_RESULT_LIMIT = 120;
 
 /**
+ * How far back custom date ranges reach.
+ *
+ * Custom ranges need day-level buckets, which grow with the archive rather than staying
+ * fixed like the precomputed windows. Bounding them keeps the biggest archetype's file
+ * a megabyte or so however deep the backfill goes, and any range older than this is
+ * still covered by the all-time window.
+ */
+export const CUSTOM_RANGE_DAYS = 400;
+
+/**
  * Every variant gets its own averages, however thin the sample. A five-deck variant
  * still describes those five decks accurately, and the page shows the count alongside
  * so a small sample is visible rather than silently swapped for the whole archetype.
@@ -199,8 +209,30 @@ export function buildArchetypes(store, {
         return { total, cards };
     }
 
+    // Day buckets for custom ranges, published beside the pages and fetched only when
+    // someone actually picks a custom range.
+    const customSince = sinceFor(CUSTOM_RANGE_DAYS);
+    const daily = store.deckCardDaily(customSince);
+    /** deckId -> day -> Map(cardId -> {copies, decksWith}) */
+    const dailyByDeck = new Map();
+    for (const row of daily.totals) {
+        let days = dailyByDeck.get(row.deckId);
+        if (!days) { days = new Map(); dailyByDeck.set(row.deckId, days); }
+        let cards = days.get(row.day);
+        if (!cards) { cards = new Map(); days.set(row.day, cards); }
+        cards.set(row.cardId, { copies: row.copies, decksWith: row.decksWith });
+    }
+    /** deckId -> day -> decklist count */
+    const dailyCounts = new Map();
+    for (const row of daily.counts) {
+        let days = dailyCounts.get(row.deckId);
+        if (!days) { days = new Map(); dailyCounts.set(row.deckId, days); }
+        days.set(row.day, row.decks);
+    }
+
     const list = [];
     let bytes = 0;
+    let dailyBytes = 0;
 
     for (const arch of archetypes) {
         const variantIds = arch.variants.map((v) => v.deckId);
@@ -253,6 +285,33 @@ export function buildArchetypes(store, {
         writeFileSync(join(dataDir, 'archetypes', `${arch.id}.json`), json);
         bytes += json.length;
 
+        // Sidecar of day buckets, keyed by variant then day. Card ids are indices into
+        // a per-file dictionary, which is most of why this stays small.
+        const dict = [];
+        const idx = new Map();
+        const indexOf = (cardId) => {
+            let i = idx.get(cardId);
+            if (i === undefined) { i = dict.length; idx.set(cardId, i); dict.push(cardId); }
+            return i;
+        };
+        const perVariant = {};
+        for (const v of arch.variants) {
+            const days = dailyByDeck.get(v.deckId);
+            if (!days) continue;
+            const out = {};
+            for (const [day, cards] of days) {
+                const flat = [];
+                for (const [cardId, t] of cards) flat.push(indexOf(cardId), t.copies, t.decksWith);
+                out[day] = [dailyCounts.get(v.deckId)?.get(day) ?? 0, flat];
+            }
+            perVariant[v.deckId] = out;
+        }
+        if (Object.keys(perVariant).length) {
+            const dailyJson = JSON.stringify({ cards: dict, days: CUSTOM_RANGE_DAYS, variants: perVariant });
+            writeFileSync(join(dataDir, 'archetypes', `${arch.id}.days.json`), dailyJson);
+            dailyBytes += dailyJson.length;
+        }
+
         const lastSeen = arch.variants.reduce((m, v) => (v.lastSeen > m ? v.lastSeen : m), '');
 
         /** Decklists in each window, so the list can be scoped without another fetch. */
@@ -293,5 +352,16 @@ export function buildArchetypes(store, {
     const listJson = JSON.stringify(list);
     writeFileSync(join(dataDir, 'archetypes.json'), listJson);
 
-    return { archetypes: list.length, bytes: bytes + listJson.length };
+    // Daily decklist counts for the whole list, so its custom range needs one fetch
+    // rather than one per archetype.
+    const listDaily = {};
+    for (const [deckId, days] of dailyCounts) listDaily[deckId] = Object.fromEntries(days);
+    const listDailyJson = JSON.stringify({ days: CUSTOM_RANGE_DAYS, decks: listDaily });
+    writeFileSync(join(dataDir, 'archetypes-days.json'), listDailyJson);
+
+    return {
+        archetypes: list.length,
+        bytes: bytes + listJson.length + dailyBytes + listDailyJson.length,
+        dailyBytes: dailyBytes + listDailyJson.length,
+    };
 }

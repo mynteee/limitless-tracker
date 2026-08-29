@@ -60,6 +60,53 @@ function deckIcons(deck, cls = '') {
         .join('');
 }
 
+/* ── date ranges ──────────────────────────────────────────────────────────── */
+
+const dayMs = 86_400_000;
+const isoDay = (d) => new Date(d).toISOString().slice(0, 10);
+
+/**
+ * A custom range chosen on a page: either the last N days, or explicit from/to dates.
+ * Both resolve to an inclusive pair of YYYY-MM-DD strings, which is the granularity the
+ * published day buckets hold.
+ */
+function resolveRange(custom) {
+    if (!custom) return null;
+    if (custom.kind === 'days') {
+        const n = Math.max(1, Number(custom.days) || 1);
+        return { from: isoDay(Date.now() - (n - 1) * dayMs), to: isoDay(Date.now()), label: `Last ${n} days` };
+    }
+    const from = custom.from || '0000-01-01';
+    const to = custom.to || isoDay(Date.now());
+    // Accept the ends either way round rather than silently returning nothing.
+    const [a, b] = from <= to ? [from, to] : [to, from];
+    return { from: a, to: b, label: `${a} to ${b}` };
+}
+
+/** The form behind the Custom chip. Shared by the archetype list and archetype pages. */
+function customRangeForm(id, custom) {
+    const c = custom ?? { kind: 'days', days: 14 };
+    return `<form class="range-form" id="${id}">
+        <label><input type="radio" name="${id}-kind" value="days"
+          ${c.kind === 'days' ? 'checked' : ''}> Last
+          <input type="number" name="days" min="1" max="3650" value="${c.kind === 'days' ? c.days : 14}"> days</label>
+        <label><input type="radio" name="${id}-kind" value="range"
+          ${c.kind === 'range' ? 'checked' : ''}> From
+          <input type="date" name="from" value="${c.from ?? ''}"> to
+          <input type="date" name="to" value="${c.to ?? ''}"></label>
+        <button type="submit">Apply</button>
+      </form>`;
+}
+
+/** Read a custom range back out of the form. */
+function readRangeForm(form) {
+    const data = new FormData(form);
+    const kind = data.get(`${form.id}-kind`) ?? 'days';
+    return kind === 'days'
+        ? { kind: 'days', days: Number(data.get('days')) || 14 }
+        : { kind: 'range', from: data.get('from') || '', to: data.get('to') || '' };
+}
+
 /* ── search ───────────────────────────────────────────────────────────────── */
 
 /**
@@ -478,14 +525,47 @@ async function renderArchetype(id, preselectVariant = null) {
     let win = arch.windows.find((w) => String(w) in arch.averages) ?? 0;
     let variant = arch.variants.some((v) => v.id === preselectVariant) ? preselectVariant : 'all';
     let showFringe = false;
+    let custom = null;   // set while a custom range is active
+    let daily = null;    // <archetype>.days.json, fetched on first custom use
+
+    /** Aggregate the day buckets into the same shape a precomputed window has. */
+    const customAverage = () => {
+        if (!daily) return null;
+        const { from, to } = resolveRange(custom);
+        const ids = variant === 'all' ? arch.variants.map((v) => v.id) : [variant];
+
+        let total = 0;
+        const merged = new Map();
+        for (const id of ids) {
+            for (const [day, [decks, flat]] of Object.entries(daily.variants[id] ?? {})) {
+                if (day < from || day > to) continue;
+                total += decks;
+                for (let i = 0; i < flat.length; i += 3) {
+                    const cardId = daily.cards[flat[i]];
+                    const cur = merged.get(cardId);
+                    if (cur) { cur.copies += flat[i + 1]; cur.decksWith += flat[i + 2]; }
+                    else merged.set(cardId, { copies: flat[i + 1], decksWith: flat[i + 2] });
+                }
+            }
+        }
+        if (total === 0) return { total: 0, cards: [] };
+        return {
+            total,
+            cards: [...merged.entries()]
+                .map(([cardId, v]) => [cardId, v.copies / total, v.decksWith / total])
+                .sort((a, b) => b[1] - a[1]),
+        };
+    };
 
     const draw = () => {
         // Every variant is published with its own average, however small the sample,
         // so this only falls back when the variant genuinely played nothing in the
         // window — never because the sample was judged too thin.
-        const forVariant = arch.averages[win]?.[variant];
-        const avg = forVariant ?? (variant === 'all' ? arch.averages[win]?.all ?? null : null);
-        const emptyVariant = variant !== 'all' && !forVariant;
+        const forVariant = custom ? customAverage() : arch.averages[win]?.[variant];
+        const avg = custom
+            ? (forVariant?.total ? forVariant : null)
+            : (forVariant ?? (variant === 'all' ? arch.averages[win]?.all ?? null : null));
+        const emptyVariant = variant !== 'all' && !avg;
         const results = variant === 'all'
             ? arch.results
             : arch.results.filter((r) => r.variant === variant);
@@ -495,8 +575,10 @@ async function renderArchetype(id, preselectVariant = null) {
           <div class="controls">
             <div class="chips" id="win-chips">
               ${arch.windows.filter((w) => String(w) in arch.averages).map((w) => `
-                <button class="chip ${w === win ? 'on' : ''}" data-win="${w}">${WINDOW_LABEL[w] ?? w + 'd'}</button>`).join('')}
+                <button class="chip ${!custom && w === win ? 'on' : ''}" data-win="${w}">${WINDOW_LABEL[w] ?? w + 'd'}</button>`).join('')}
+              <button class="chip ${custom ? 'on' : ''}" data-win="custom">Custom…</button>
             </div>
+            ${custom ? customRangeForm('arch-range', custom) : ''}
             ${arch.variants.length > 1 ? `<div class="chips" id="var-chips">
               <button class="chip ${variant === 'all' ? 'on' : ''}" data-var="all">All variants</button>
               ${arch.variants.map((v) => `
@@ -509,7 +591,7 @@ async function renderArchetype(id, preselectVariant = null) {
           <h2>Average decklist</h2>
           ${avg
             ? `<p class="muted">${avg.total.toLocaleString()} decklist${avg.total === 1 ? '' : 's'}
-               · ${esc(WINDOW_LABEL[win] ?? win + ' days')}${
+               · ${esc(custom ? resolveRange(custom).label : WINDOW_LABEL[win] ?? win + ' days')}${
                  avg.total < 20 ? ' · small sample' : ''}</p>
                ${renderAverage(avg.cards, showFringe)}`
             : `<p class="empty">${emptyVariant
@@ -526,7 +608,23 @@ async function renderArchetype(id, preselectVariant = null) {
         wireRows(body);
 
         document.querySelectorAll('#win-chips .chip').forEach((b) =>
-            b.addEventListener('click', () => { win = Number(b.dataset.win); draw(); }));
+            b.addEventListener('click', async () => {
+                if (b.dataset.win === 'custom') {
+                    custom = custom ?? { kind: 'days', days: 14 };
+                    // Day buckets ship as a sidecar covering the recent window only, and
+                    // are fetched lazily so the page load never pays for them.
+                    daily ??= await getJson(`data/archetypes/${encodeURIComponent(arch.id)}.days.json`);
+                } else {
+                    custom = null;
+                    win = Number(b.dataset.win);
+                }
+                draw();
+            }));
+        document.getElementById('arch-range')?.addEventListener('submit', (e) => {
+            e.preventDefault();
+            custom = readRangeForm(e.target);
+            draw();
+        });
         document.querySelectorAll('#var-chips .chip').forEach((b) =>
             b.addEventListener('click', () => { variant = b.dataset.var; draw(); }));
         document.getElementById('fringe')?.addEventListener('click', () => {
@@ -606,6 +704,8 @@ async function renderArchetypeList() {
     // with its variants and per-window counts, so switching is instant.
     let win = 0;
     let split = false;
+    let custom = null;       // set while the Custom window is active
+    let dailyCounts = null;  // archetypes-days.json, fetched on first custom use
 
     view.innerHTML = `
       <h1 class="page-title">Archetypes</h1>
@@ -613,6 +713,7 @@ async function renderArchetypeList() {
         <div class="chips" id="adeck-win"></div>
         <div class="chips"><button class="chip" id="adeck-split">Split variants</button></div>
       </div>
+      <div id="adeck-range"></div>
       <form id="deck-form" class="inline-search" role="search">
         <input id="dq" type="search" placeholder="Filter archetypes…"
                aria-label="Filter archetypes" spellcheck="false">
@@ -625,7 +726,22 @@ async function renderArchetypeList() {
     const winBox = document.getElementById('adeck-win');
     const splitBtn = document.getElementById('adeck-split');
 
-    const countIn = (entry) => entry.windows?.[win] ?? (win === 0 ? entry.decks : 0);
+    const range = () => resolveRange(custom);
+
+    /** Decklists for an entry, either from a precomputed window or a custom range. */
+    const countIn = (entry) => {
+        if (!custom) return entry.windows?.[win] ?? (win === 0 ? entry.decks : 0);
+        if (!dailyCounts) return 0;
+        const { from, to } = range();
+        const ids = entry.variants?.length ? entry.variants.map((v) => v.id) : [entry.id];
+        let n = 0;
+        for (const id of ids) {
+            for (const [day, c] of Object.entries(dailyCounts.decks[id] ?? {})) {
+                if (day >= from && day <= to) n += c;
+            }
+        }
+        return n;
+    };
 
     const row = (e, href, sub) => `
       <a class="result" href="#/d/${href}">
@@ -639,9 +755,11 @@ async function renderArchetypeList() {
 
     const draw = () => {
         winBox.innerHTML = [[0, 'All time'], [90, 'Last 90 days'], [30, 'Last 30 days']]
-            .map(([w, label]) => `<button class="chip ${w === win ? 'on' : ''}" data-win="${w}">${label}</button>`)
-            .join('');
+            .map(([w, label]) => `<button class="chip ${!custom && w === win ? 'on' : ''}" data-win="${w}">${label}</button>`)
+            .join('') + `<button class="chip ${custom ? 'on' : ''}" data-win="custom">Custom…</button>`;
         splitBtn.classList.toggle('on', split);
+        document.getElementById('adeck-range').innerHTML =
+            custom ? customRangeForm('adeck-form', custom) : '';
 
         const t = dq.value.trim().toLowerCase();
         const matches = (e) => !t || e.id.includes(t) || e.name.toLowerCase().includes(t);
@@ -674,7 +792,7 @@ async function renderArchetypeList() {
 
         document.getElementById('adeck-count').textContent =
             `${shown} ${split ? 'variants' : 'archetypes'}` +
-            (win ? ` played in the last ${win} days` : ' all time');
+            (custom ? ` · ${range().label}` : win ? ` played in the last ${win} days` : ' all time');
         box.innerHTML = shown === 0
             ? `<p class="empty">Nothing matching that.</p>`
             : `<div class="results">${rows}</div>`;
@@ -682,10 +800,24 @@ async function renderArchetypeList() {
 
     document.getElementById('deck-form').addEventListener('submit', (e) => e.preventDefault());
     dq.addEventListener('input', draw);
-    winBox.addEventListener('click', (e) => {
+    winBox.addEventListener('click', async (e) => {
         const b = e.target.closest('[data-win]');
         if (!b) return;
-        win = Number(b.dataset.win);
+        if (b.dataset.win === 'custom') {
+            custom = custom ?? { kind: 'days', days: 14 };
+            // Day buckets only ship for the recent window, so this is fetched lazily
+            // and only by people who actually use a custom range.
+            dailyCounts ??= await getJson('data/archetypes-days.json');
+        } else {
+            custom = null;
+            win = Number(b.dataset.win);
+        }
+        draw();
+    });
+
+    document.getElementById('adeck-range').addEventListener('submit', (e) => {
+        e.preventDefault();
+        custom = readRangeForm(e.target);
         draw();
     });
     splitBtn.addEventListener('click', () => { split = !split; draw(); });

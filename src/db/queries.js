@@ -253,6 +253,33 @@ export class Store {
                 GROUP BY deck_id
             `),
 
+            /**
+             * Per-deck, per-day card totals inside a recent window.
+             *
+             * The precomputed windows on an archetype page cannot answer an arbitrary
+             * date range, and day granularity is the only thing that makes "last N days"
+             * exact. It is bounded to a recent window on purpose: unbounded it grows with
+             * the whole archive, and the biggest archetype's file would reach tens of
+             * megabytes once the backfill runs to the 2020 floor.
+             */
+            deckCardDaily: db.prepare(`
+                SELECT s.deck_id AS deckId, substr(s.date, 1, 10) AS day,
+                       cp.card_id AS cardId,
+                       SUM(cp.count) AS copies, COUNT(*) AS decksWith
+                FROM standing s
+                JOIN card_play cp ON cp.tournament_id = s.tournament_id AND cp.player = s.player
+                WHERE s.deck_id IS NOT NULL AND s.date >= ?1
+                GROUP BY 1, 2, 3
+            `),
+
+            /** Decklists per deck id per day — the denominator, and the list's counts. */
+            deckCountsDaily: db.prepare(`
+                SELECT deck_id AS deckId, substr(date, 1, 10) AS day, COUNT(*) AS decks
+                FROM standing
+                WHERE deck_id IS NOT NULL AND decklist IS NOT NULL AND date >= ?1
+                GROUP BY 1, 2
+            `),
+
             /** Every card, for the shared dictionary the archetype pages reference. */
             allCards: db.prepare(`
                 SELECT c.id, c.name, c.set_ AS setCode, c.number, c.kind,
@@ -716,6 +743,14 @@ export class Store {
                    (SELECT COUNT(DISTINCT group_id) FROM card_print
                      WHERE card_id IN (SELECT id FROM card)) AS groups
         `).get();
+    }
+
+    /** @param {string} since ISO date */
+    deckCardDaily(since) {
+        return {
+            totals: this.stmt.deckCardDaily.all(since),
+            counts: this.stmt.deckCountsDaily.all(since),
+        };
     }
 
     cardIndexStats() {
