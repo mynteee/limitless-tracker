@@ -39,6 +39,12 @@ limitless-tracker
     --deck <tournamentId>  print the full decklist from that event
     --json
 
+  card <name|SET-NUM>    Which decklists ran a card, newest event first
+    --all                  every result, not just the most recent event
+    --limit <N>            rows to show (default 25)
+
+  reindex                Rebuild the card index from stored decklists
+
   search <term>          Find players by handle or display name
   stats                  What the local database currently holds
 
@@ -57,6 +63,7 @@ const args = parseArgs({
         'max-minutes': { type: 'string' },
         'max-requests': { type: 'string' },
         'no-deepen': { type: 'boolean' },
+        all: { type: 'boolean' },
         'all-events': { type: 'boolean' },
         since: { type: 'string' },
         until: { type: 'string' },
@@ -99,6 +106,8 @@ try {
         case 'build':   cmdBuild(); break;
         case 'serve':   cmdServe(); break;
         case 'lookup':  cmdLookup(rest.join(' ')); break;
+        case 'card':    cmdCard(rest.join(' ')); break;
+        case 'reindex': cmdReindex(); break;
         case 'search':  cmdSearch(rest.join(' ')); break;
         case 'stats':   cmdStats(); break;
         default:
@@ -418,6 +427,72 @@ function cmdLookup(handle) {
     );
 
     console.log(`\nFull decklist:  lookup ${handle} --deck ${history[0].tournamentId}`);
+}
+
+function cmdReindex() {
+    const t = Date.now();
+    process.stdout.write('Rebuilding the card index from stored decklists... ');
+    store.reindexCards();
+    const s = store.cardIndexStats();
+    console.log(`done in ${humanDuration(Date.now() - t)}`);
+    console.log(`${s.cards.toLocaleString()} distinct cards, ${s.plays.toLocaleString()} card-in-deck rows`);
+}
+
+function cmdCard(term) {
+    if (!term) return fail('Usage: card <name or SET-NUM>');
+
+    // Accept an exact id, otherwise search by name and take the most-played match.
+    let card = /^[A-Za-z0-9]+-[A-Za-z0-9]+$/.test(term) ? store.getCard(term) : null;
+    if (!card) {
+        const hits = store.searchCards(term, 10);
+        if (hits.length === 0) return console.log(`No card matching "${term}".`);
+        if (hits.length > 1 && hits[0].name.toLowerCase() !== term.toLowerCase()) {
+            console.log(`
+Several cards match "${term}":
+`);
+            printTable(
+                ['Card', 'Name', 'Kind', 'Decks'],
+                hits.map((h) => [h.id, truncate(h.name, 34), h.kind, h.decks.toLocaleString()]),
+            );
+            console.log(`
+Pick one: card ${hits[0].id}`);
+            return;
+        }
+        card = hits[0];
+    }
+
+    const limit = num(opts.limit, 25);
+    // Default view is the most recent event only, which is what the card page shows;
+    // --all walks back through everything the index holds.
+    const shown = opts.all
+        ? store.getCardResults(card.id, { limit })
+        : store.getCardLatestEvent(card.id);
+    if (shown.length === 0) return console.log(`No decklists recorded for ${card.id}.`);
+
+    console.log(`
+${card.name}  (${card.setCode}-${card.number}, ${card.kind})`);
+    console.log(`in ${card.decks.toLocaleString()} decklists`);
+    console.log(opts.all
+        ? `
+Latest ${Math.min(shown.length, limit)} results`
+        : `
+Decklists that include this card — ${shown[0].tournamentName}`);
+    console.log();
+
+    printTable(
+        ['Place', 'Deck', 'Player', 'Copies'].concat(opts.all ? ['Tournament'] : []),
+        shown.slice(0, limit).map((r) => [
+            r.placing === null ? 'drop' : ordinal(r.placing),
+            truncate(r.deckName ?? '—', 22),
+            truncate(r.displayName ?? r.player, 20),
+            String(r.count),
+        ].concat(opts.all ? [truncate(r.tournamentName, 34)] : [])),
+    );
+
+    if (!opts.all && card.decks > shown.length) {
+        console.log(`
+${(card.decks - shown.length).toLocaleString()} more across earlier events: card ${card.id} --all`);
+    }
 }
 
 function cmdSearch(term) {

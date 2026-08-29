@@ -139,6 +139,8 @@ node src/cli.js <command>
 | `crawl` | Fetch new tournaments. Resumable and rate-limited. |
 | `lookup <player>` | A player's full history in the terminal. |
 | `search <term>` | Find a player by handle or any display name. |
+| `card <name\|SET-NUM>` | Which decklists ran a card, newest event first. `--all` for earlier events. |
+| `reindex` | Rebuild the card index from stored decklists. |
 | `build` | Generate the static site into `dist/`. Needs no network. |
 | `serve` | Preview the built site on <http://localhost:8080>. |
 | `stats` | What your database holds, and how much is left to crawl. |

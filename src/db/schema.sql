@@ -64,6 +64,41 @@ CREATE TABLE IF NOT EXISTS standing (
 -- into a sub-millisecond lookup, and is the whole reason this project has a database.
 CREATE INDEX IF NOT EXISTS idx_standing_player ON standing(player);
 
+-- One row per distinct card ever played. Names are held here rather than repeated
+-- across millions of play rows.
+CREATE TABLE IF NOT EXISTS card (
+    id     TEXT PRIMARY KEY,   -- "MEG-114"
+    set_   TEXT NOT NULL,
+    number TEXT NOT NULL,
+    name   TEXT NOT NULL,
+    kind   TEXT NOT NULL       -- pokemon | trainer | energy
+);
+
+CREATE INDEX IF NOT EXISTS idx_card_name ON card(name);
+
+-- Which decklists play which card. Decklists are stored as opaque JSON on `standing`,
+-- which is right for reading one player's list back, but useless for the reverse
+-- question - "which decks ran this card?" - because no index can reach inside a blob.
+-- This is that reverse index, derived from the same JSON and rebuilt by `reindex`.
+CREATE TABLE IF NOT EXISTS card_play (
+    card_id       TEXT NOT NULL,
+    tournament_id TEXT NOT NULL,
+    player        TEXT NOT NULL,
+    count         INTEGER NOT NULL,
+    -- Denormalised from tournament. Card pages are ordered by event date, and a
+    -- staple matches ~98,000 rows: without the date here every one of them has to be
+    -- joined and sorted before LIMIT can apply, which measured at 5.9s per card and
+    -- would put the site build into the hours.
+    date          TEXT NOT NULL,
+    PRIMARY KEY (card_id, tournament_id, player)
+) WITHOUT ROWID;
+
+-- Serves "most recent results for this card" straight from the index.
+CREATE INDEX IF NOT EXISTS idx_card_play_recent ON card_play(card_id, date DESC);
+
+-- Reaching the standing (and so the placing and deck) from a card.
+CREATE INDEX IF NOT EXISTS idx_card_play_standing ON card_play(tournament_id, player);
+
 -- Supports archetype queries ("who played Dragapult Dusknoir?") in later phases.
 CREATE INDEX IF NOT EXISTS idx_standing_deck ON standing(deck_id) WHERE deck_id IS NOT NULL;
 

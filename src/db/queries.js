@@ -1,3 +1,6 @@
+/** The three decklist sections the API returns. */
+export const CARD_KINDS = ['pokemon', 'trainer', 'energy'];
+
 /**
  * Prepared statements over the local store.
  *
@@ -52,6 +55,44 @@ export class Store {
             `),
 
             deleteStandings: db.prepare(`DELETE FROM standing WHERE tournament_id = ?`),
+
+            deleteCardPlays: db.prepare(`DELETE FROM card_play WHERE tournament_id = ?`),
+
+            // Derive the card tables straight from the decklist JSON. The same two
+            // statements serve both the per-tournament path during a crawl and the
+            // bulk rebuild, so the two can never drift: pass a tournament id to scope
+            // it, or NULL to do the whole corpus.
+            // ?1 = kind (pokemon|trainer|energy), ?2 = tournament id or NULL for all.
+            indexCards: db.prepare(`
+                INSERT INTO card (id, set_, number, name, kind)
+                SELECT DISTINCT
+                    json_extract(c.value, '$.set') || '-' || json_extract(c.value, '$.number'),
+                    json_extract(c.value, '$.set'),
+                    json_extract(c.value, '$.number'),
+                    json_extract(c.value, '$.name'),
+                    ?1
+                FROM standing s, json_each(s.decklist, '$.' || ?1) c
+                WHERE s.decklist IS NOT NULL AND (?2 IS NULL OR s.tournament_id = ?2)
+                ON CONFLICT(id) DO NOTHING
+            `),
+
+            indexCardPlays: db.prepare(`
+                INSERT INTO card_play (card_id, tournament_id, player, count, date)
+                SELECT json_extract(c.value, '$.set') || '-' || json_extract(c.value, '$.number'),
+                       s.tournament_id,
+                       s.player,
+                       -- A list can split one card across entries; sum rather than
+                       -- letting the second row collide with the first.
+                       SUM(json_extract(c.value, '$.count')),
+                       t.date
+                FROM standing s
+                JOIN tournament t ON t.id = s.tournament_id
+                JOIN json_each(s.decklist, '$.' || ?1) c
+                WHERE s.decklist IS NOT NULL AND (?2 IS NULL OR s.tournament_id = ?2)
+                GROUP BY 1, 2, 3
+                ON CONFLICT(card_id, tournament_id, player)
+                    DO UPDATE SET count = excluded.count
+            `),
 
             insertStanding: db.prepare(`
                 INSERT INTO standing (
@@ -109,6 +150,72 @@ export class Store {
                 JOIN tournament t ON t.id = s.tournament_id
                 WHERE s.player = ?
                 ORDER BY t.date DESC
+            `),
+
+            searchCards: db.prepare(`
+                SELECT c.id, c.name, c.set_ AS setCode, c.number, c.kind,
+                       COUNT(cp.card_id) AS decks
+                FROM card c
+                LEFT JOIN card_play cp ON cp.card_id = c.id
+                WHERE lower(c.name) LIKE ?1 OR lower(c.id) LIKE ?1
+                GROUP BY c.id
+                ORDER BY decks DESC
+                LIMIT ?2
+            `),
+
+            cardById: db.prepare(`
+                SELECT c.id, c.name, c.set_ AS setCode, c.number, c.kind,
+                       (SELECT COUNT(*) FROM card_play WHERE card_id = c.id) AS decks
+                FROM card c WHERE c.id = ?
+            `),
+
+            /** The newest event this card appeared at. Served straight off the index. */
+            cardLatestTournament: db.prepare(`
+                SELECT tournament_id AS id FROM card_play
+                WHERE card_id = ? ORDER BY date DESC LIMIT 1
+            `),
+
+            /**
+             * Every decklist at one event that ran this card, best placing first.
+             * Dropped players have a NULL placing and sort last rather than first.
+             */
+            cardResultsAtTournament: db.prepare(`
+                SELECT t.id AS tournamentId, t.name AS tournamentName, t.date,
+                       t.players AS fieldSize,
+                       s.player, s.name AS displayName, s.placing,
+                       s.deck_id AS deckId, s.deck_name AS deckName, s.deck_icons AS deckIcons,
+                       cp.count
+                FROM card_play cp
+                JOIN standing s ON s.tournament_id = cp.tournament_id AND s.player = cp.player
+                JOIN tournament t ON t.id = cp.tournament_id
+                WHERE cp.card_id = ? AND cp.tournament_id = ?
+                ORDER BY s.placing IS NULL, s.placing ASC
+            `),
+
+            /**
+             * The most recent results across events.
+             *
+             * The window is taken in a subquery ordered by date alone, which the
+             * (card_id, date) index serves directly and stops at LIMIT. Sorting on the
+             * joined placing in the outer query instead would force every matching row
+             * into a temp b-tree first — 98,000 of them for a staple, and six seconds.
+             */
+            cardResults: db.prepare(`
+                SELECT t.id AS tournamentId, t.name AS tournamentName, cp.date,
+                       t.players AS fieldSize,
+                       s.player, s.name AS displayName, s.placing,
+                       s.deck_id AS deckId, s.deck_name AS deckName, s.deck_icons AS deckIcons,
+                       cp.count
+                FROM (
+                    SELECT tournament_id, player, count, date
+                    FROM card_play
+                    WHERE card_id = ?
+                    ORDER BY date DESC
+                    LIMIT ? OFFSET ?
+                ) cp
+                JOIN standing s ON s.tournament_id = cp.tournament_id AND s.player = cp.player
+                JOIN tournament t ON t.id = cp.tournament_id
+                ORDER BY cp.date DESC, s.placing IS NULL, s.placing ASC
             `),
 
             coverage: db.prepare(`
@@ -214,6 +321,7 @@ export class Store {
         this.db.exec('BEGIN');
         try {
             // Delete-then-insert so a re-crawl repairs a partial or stale ingest.
+            this.stmt.deleteCardPlays.run(tournamentId);
             this.stmt.deleteStandings.run(tournamentId);
             for (const r of rows) {
                 this.stmt.insertStanding.run(
@@ -222,6 +330,10 @@ export class Store {
                     r.deckId, r.deckName, r.deckIcons, r.decklist,
                 );
             }
+            // Same transaction as the standings themselves, so the reverse index can
+            // never be left describing decklists that were rolled back.
+            this.indexCards(tournamentId);
+
             this.stmt.markFetched.run(
                 new Date().toISOString(), rows.length, hasDecklists ? 1 : 0, tournamentId,
             );
@@ -294,6 +406,62 @@ export class Store {
     getDecklist(handle, tournamentId) {
         const row = this.stmt.playerDecklist.get(handle.toLowerCase(), tournamentId);
         return row?.decklist ? JSON.parse(row.decklist) : null;
+    }
+
+    /**
+     * Rebuild the card index from the decklists already stored.
+     * @param {string|null} tournamentId scope to one tournament, or null for everything
+     */
+    indexCards(tournamentId = null) {
+        for (const kind of CARD_KINDS) {
+            this.stmt.indexCards.run(kind, tournamentId);
+            this.stmt.indexCardPlays.run(kind, tournamentId);
+        }
+    }
+
+    /** Drop and rebuild the whole card index. Derived data — safe to redo at any time. */
+    reindexCards() {
+        this.db.exec('BEGIN');
+        try {
+            this.db.exec('DELETE FROM card_play');
+            this.db.exec('DELETE FROM card');
+            this.indexCards(null);
+            this.db.exec('COMMIT');
+        } catch (err) {
+            this.db.exec('ROLLBACK');
+            throw err;
+        }
+    }
+
+    cardIndexStats() {
+        return this.db.prepare(`
+            SELECT (SELECT COUNT(*) FROM card) AS cards,
+                   (SELECT COUNT(*) FROM card_play) AS plays
+        `).get();
+    }
+
+    searchCards(term, limit = 25) {
+        return this.stmt.searchCards.all(`%${term.toLowerCase()}%`, limit);
+    }
+
+    getCard(cardId) {
+        return this.stmt.cardById.get(cardId.toUpperCase()) ?? null;
+    }
+
+    getCardResults(cardId, { limit = 50, offset = 0 } = {}) {
+        return this.stmt.cardResults.all(cardId.toUpperCase(), limit, offset);
+    }
+
+    /**
+     * Every deck at the card's most recent event, which is what a card page leads with.
+     * Queried by tournament rather than taking a slice of the recent window, so a big
+     * event is never truncated halfway through its standings.
+     */
+    getCardLatestEvent(cardId) {
+        const id = cardId.toUpperCase();
+        const latest = this.stmt.cardLatestTournament.get(id);
+        if (!latest) return [];
+        return this.stmt.cardResultsAtTournament.all(id, latest.id);
     }
 
     countTournaments(game = null, format = null) {
