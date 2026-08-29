@@ -4,6 +4,7 @@ import { LimitlessApi } from './api/limitless.js';
 import { openDb, DEFAULT_DB_PATH } from './db/open.js';
 import { Store } from './db/queries.js';
 import { discover, fetchPending } from './ingest/crawl.js';
+import { fetchPrintGroups } from './ingest/prints.js';
 import { build } from './publish/build.js';
 import { serve } from './publish/serve.js';
 import { groupArchetypes } from './publish/archetypes.js';
@@ -55,6 +56,10 @@ limitless-tracker
     --variant <deck_id>    restrict to one variant
     --results              show placements instead of the average list
     --limit <N>
+
+  prints                 Work out which card printings are the same card
+    --limit <N>            look up at most N cards this run
+    --max-minutes <N>
 
   reindex                Rebuild the card index from stored decklists
 
@@ -126,6 +131,7 @@ try {
         case 'card':    cmdCard(rest.join(' ')); break;
         case 'decks':   cmdDecks(); break;
         case 'deck':    cmdDeck(rest.join(' ')); break;
+        case 'prints':  await cmdPrints(); break;
         case 'reindex': cmdReindex(); break;
         case 'search':  cmdSearch(rest.join(' ')); break;
         case 'stats':   cmdStats(); break;
@@ -565,6 +571,48 @@ Average decklist — ${total.toLocaleString()} decklists, last ${days} days
         }
         console.log();
     }
+}
+
+async function cmdPrints() {
+    const before = store.printStats();
+    const todo = store.cardsWithoutPrints(-1).length;
+    if (todo === 0) {
+        console.log(`All ${before.cards.toLocaleString()} cards resolved into `
+            + `${before.groups.toLocaleString()} distinct cards.`);
+        return;
+    }
+
+    const deadline = opts['max-minutes']
+        ? Date.now() + Number(opts['max-minutes']) * 60_000
+        : Infinity;
+
+    console.log(`Looking up print groups for ${todo.toLocaleString()} cards on limitlesstcg.com`);
+    console.log('Cached permanently — only cards never looked up are fetched.\n');
+
+    const controller = new AbortController();
+    process.on('SIGINT', () => {
+        console.log('\n\nStopping — progress is saved, re-run to continue.');
+        controller.abort();
+    });
+
+    const r = await fetchPrintGroups(store, {
+        limit: num(opts.limit, Infinity),
+        deadline,
+        signal: controller.signal,
+        onProgress: ({ done, total, card, prints }) => {
+            const line = `  [${String(done).padStart(5)}/${total}] ${card.padEnd(10)} ${prints} print${prints === 1 ? '' : 's'}`;
+            if (process.stdout.isTTY) process.stdout.write(`\r${line.padEnd(70)}`);
+            else console.log(line);
+        },
+    });
+    if (process.stdout.isTTY) process.stdout.write('\n');
+
+    const after = store.printStats();
+    console.log(`\nLooked up ${r.done}${r.failed ? ` (${r.failed} unreadable)` : ''}.`);
+    console.log(`${after.looked_up.toLocaleString()} of ${after.cards.toLocaleString()} `
+        + `printings resolved, into ${after.groups.toLocaleString()} distinct cards.`);
+    const left = store.cardsWithoutPrints(-1).length;
+    if (left) console.log(`${left.toLocaleString()} still to look up — re-run to continue.`);
 }
 
 function cmdReindex() {

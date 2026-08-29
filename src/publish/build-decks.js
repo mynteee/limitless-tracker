@@ -49,27 +49,53 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
         Object.fromEntries(cards.map((c) => [c.id, [c.name, c.kind, c.setCode, c.number]])),
     );
 
-    const made = new Set();
-    let bytes = 0;
-    let written = 0;
-
+    // One page per card, not per printing. Mystery Garden MEG-122 and ASC-194 are the
+    // same card and share a page; the ten different Charcadets do not, because they are
+    // ten different cards that merely share a name. `card_print` holds that distinction,
+    // scraped from Limitless. A card never looked up falls back to being its own group,
+    // so an incomplete scrape splits pages rather than merging the wrong ones.
+    /** @type {Map<string, typeof cards>} */
+    const groups = new Map();
     for (const card of cards) {
         if (card.decks === 0) continue;
+        const groupId = store.printGroupOf(card.id) ?? card.id;
+        if (!groups.has(groupId)) groups.set(groupId, []);
+        groups.get(groupId).push(card);
+    }
 
-        const rows = store.getCardResults(card.id, { limit: CARD_RESULT_LIMIT });
-        if (rows.length === 0) continue;
-
-        const pp = shard(card.id.toLowerCase());
-        const dir = join(dataDir, 'cards', pp);
+    const made = new Set();
+    const dirFor = (id) => {
+        const dir = join(dataDir, 'cards', shard(id.toLowerCase()));
         if (!made.has(dir)) { mkdirSync(dir, { recursive: true }); made.add(dir); }
+        return dir;
+    };
+
+    let bytes = 0;
+    let written = 0;
+    let merged = 0;
+
+    for (const prints of groups.values()) {
+        // Most-played printing names the page: it is the one people recognise, and it
+        // keeps the URL on the print that actually sees play.
+        prints.sort((a, b) => b.decks - a.decks || a.id.localeCompare(b.id));
+        const primary = prints[0];
+        const ids = prints.map((c) => c.id);
+
+        const rows = store.getGroupResults(ids, { limit: CARD_RESULT_LIMIT });
+        if (rows.length === 0) continue;
+        const decks = store.countGroupDecks(ids);
 
         const payload = {
-            id: card.id,
-            name: card.name,
-            setCode: card.setCode,
-            number: card.number,
-            kind: card.kind,
-            decks: card.decks,
+            id: primary.id,
+            name: primary.name,
+            setCode: primary.setCode,
+            number: primary.number,
+            kind: primary.kind,
+            decks,
+            // Every printing on this page, so it can say where else the card appears.
+            prints: prints.map((c) => ({
+                id: c.id, setCode: c.setCode, number: c.number, decks: c.decks,
+            })),
             // The site shows this event on its own first, then the rest on request.
             latestTournament: rows[0].tournamentId,
             results: rows.map((r) => ({
@@ -88,21 +114,34 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
         };
 
         const json = JSON.stringify(payload);
-        writeFileSync(join(dir, `${card.id}.json`), json);
+        writeFileSync(join(dirFor(primary.id), `${primary.id}.json`), json);
         bytes += json.length;
         written++;
+        if (prints.length > 1) merged += prints.length - 1;
 
-        const entry = { handle: card.id, name: card.name, type: 'card', events: card.decks, last: rows[0].date.slice(0, 10) };
-        // Findable by the card name and by its set-number id.
-        for (const key of indexKeys(card.id.toLowerCase(), [card.name])) {
+        // Other printings resolve to the page rather than 404ing, so a link to any
+        // printing still works.
+        for (const other of prints.slice(1)) {
+            const stub = JSON.stringify({ alias: primary.id });
+            writeFileSync(join(dirFor(other.id), `${other.id}.json`), stub);
+            bytes += stub.length;
+        }
+
+        const entry = {
+            handle: primary.id, name: primary.name, type: 'card',
+            events: decks, last: rows[0].date.slice(0, 10),
+        };
+        if (prints.length > 1) entry.prints = prints.length;
+        // Findable by name and by ANY of its printing codes, all pointing at one page.
+        for (const key of indexKeys(primary.id.toLowerCase(), [primary.name, ...ids])) {
             if (!searchIndex.has(key)) searchIndex.set(key, []);
             searchIndex.get(key).push(entry);
         }
 
-        if (written % 250 === 0) onProgress({ type: 'cards', written, total: cards.length });
+        if (written % 250 === 0) onProgress({ type: 'cards', written, total: groups.size });
     }
 
-    return { cards: written, bytes };
+    return { cards: written, mergedPrints: merged, bytes };
 }
 
 /**

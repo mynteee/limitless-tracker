@@ -91,6 +91,24 @@ CREATE TABLE IF NOT EXISTS card (
 
 CREATE INDEX IF NOT EXISTS idx_card_name ON card(name);
 
+-- Which prints are the same card.
+--
+-- Sharing a name is NOT enough: Charcadet appears ten times in this corpus as ten
+-- genuinely different cards, while Mystery Garden MEG-122 and ASC-194 are one card
+-- printed twice. The only reliable answer is the card's own text, which the tournament
+-- API never returns - so this is scraped from the "Prints" table Limitless publishes on
+-- each card page, which is their authoritative grouping.
+--
+-- `group_id` is shared by every print of one card. `fetched_at` NULL means the card has
+-- not been looked up yet, so `prints` only fetches what it is missing.
+CREATE TABLE IF NOT EXISTS card_print (
+    card_id    TEXT PRIMARY KEY,
+    group_id   TEXT NOT NULL,
+    fetched_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_card_print_group ON card_print(group_id);
+
 -- Which decklists play which card. Decklists are stored as opaque JSON on `standing`,
 -- which is right for reading one player's list back, but useless for the reverse
 -- question - "which decks ran this card?" - because no index can reach inside a blob.

@@ -12,8 +12,9 @@ time, and each decklist rendered the way Limitless renders it.
 ## Using the site
 
 The published site is static and answers everything from pre-built data, so it stays fast
-no matter how many people use it. One search box covers **players, decks and cards**, and
-the results can be narrowed to one kind with the tabs above them.
+no matter how many people use it. The main search box covers **players and decks**, with
+tabs to narrow to one kind. **Cards have their own search** at `#/cards`, kept separate so
+2,160 card names cannot bury the person you were looking for.
 
 **Players** — search by handle (`awsomeguy1975`), display name (`Mark Miller`), or a name
 someone used months ago; renames never hide a player. Click any event to expand the
@@ -24,8 +25,9 @@ the average decklist as card art badged with the mean number of copies, and its 
 placements. Both can be scoped to the last 30 days, 90 days or all time, and filtered to
 a single variant.
 
-**Cards** — a card page lists the decklists that ran it, newest event first and sorted by
-placing, with the rest of its history behind a toggle.
+**Cards** — search them at `#/cards`. A card page lists the decklists that ran it, newest
+event first and sorted by placing, with the rest of its history behind a toggle. Clicking
+a row opens that decklist in place. Reprints share one page — see [Reprints](#reprints).
 
 ---
 
@@ -147,6 +149,7 @@ node src/cli.js <command>
 | `card <name\|SET-NUM>` | Which decklists ran a card, newest event first. `--all` for earlier events. |
 | `decks` | List every archetype, most played first. `--variants` to break them out. |
 | `deck <archetype>` | Average decklist, or `--results` for placements. `--days`, `--variant`. |
+| `prints` | Work out which printings are the same card. Cached; run once. |
 | `reindex` | Rebuild the card index from stored decklists. |
 | `build` | Generate the static site into `dist/`. Needs no network. |
 | `serve` | Preview the built site on <http://localhost:8080>. |
@@ -204,6 +207,25 @@ longer qualifies. It reports what it would remove and changes nothing unless you
 `--apply`.
 
 ---
+
+## Reprints
+
+The tournament API describes a decklist entry as `{count, set, number, name}` and nothing
+more — no card text. A name alone cannot decide whether two printings are the same card:
+this corpus holds **ten different Charcadet cards** that merely share a name, alongside
+**Mystery Garden MEG-122 and ASC-194**, which are one card printed twice.
+
+Limitless already answers this on each card page, so `prints` reads their grouping rather
+than guessing:
+
+```bash
+node src/cli.js prints
+```
+
+It looks up only cards it has never seen, caches permanently, and is safe to interrupt.
+Looking up one printing settles every other printing of that card at once. Card pages
+then cover all printings together, counting a deck that runs two printings as one deck
+with the copies summed, and any printing's URL resolves to the shared page.
 
 ## Finding players who changed their name
 

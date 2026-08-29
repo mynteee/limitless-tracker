@@ -261,6 +261,74 @@ export class Store {
                 ORDER BY c.id
             `),
 
+            /**
+             * Results for a whole print group.
+             *
+             * A decklist can run two printings of the same card - 2x Ultra Ball SVI-196
+             * plus 2x MEG-131 is four Ultra Balls in one deck, not two decks of two. So
+             * the counts are summed per (tournament, player) rather than the rows being
+             * unioned, which would double-count both the copies and the deck.
+             */
+            groupResults: db.prepare(`
+                SELECT t.id AS tournamentId, t.name AS tournamentName, g.date,
+                       t.players AS fieldSize,
+                       s.player, s.name AS displayName, s.placing,
+                       s.deck_id AS deckId, s.deck_name AS deckName, s.deck_icons AS deckIcons,
+                       g.count
+                FROM (
+                    SELECT tournament_id, player, SUM(count) AS count, MAX(date) AS date
+                    FROM card_play
+                    WHERE card_id IN (SELECT value FROM json_each(?1))
+                    GROUP BY tournament_id, player
+                    ORDER BY date DESC
+                    LIMIT ?2
+                ) g
+                JOIN standing s ON s.tournament_id = g.tournament_id AND s.player = g.player
+                JOIN tournament t ON t.id = g.tournament_id
+                ORDER BY g.date DESC, s.placing IS NULL, s.placing ASC
+            `),
+
+            countGroupDecks: db.prepare(`
+                SELECT COUNT(*) AS n FROM (
+                    SELECT 1 FROM card_play
+                    WHERE card_id IN (SELECT value FROM json_each(?1))
+                    GROUP BY tournament_id, player
+                )
+            `),
+
+            cardsWithoutPrints: db.prepare(`
+                SELECT c.id, c.set_ AS setCode, c.number, c.name
+                FROM card c
+                LEFT JOIN card_print p ON p.card_id = c.id
+                WHERE p.card_id IS NULL
+                ORDER BY (SELECT COUNT(*) FROM card_play WHERE card_id = c.id) DESC
+                LIMIT CASE WHEN ?1 < 0 THEN -1 ELSE ?1 END
+            `),
+
+            setPrintGroup: db.prepare(`
+                INSERT INTO card_print (card_id, group_id, fetched_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(card_id) DO UPDATE SET
+                    group_id = excluded.group_id, fetched_at = excluded.fetched_at
+            `),
+
+            printGroupOf: db.prepare(`SELECT group_id FROM card_print WHERE card_id = ?`),
+
+            /** Every print of a card that this corpus actually has data for. */
+            printsInGroup: db.prepare(`
+                SELECT c.id, c.set_ AS setCode, c.number, c.name, c.kind,
+                       (SELECT COUNT(*) FROM card_play WHERE card_id = c.id) AS decks
+                FROM card_print p
+                JOIN card c ON c.id = p.card_id
+                WHERE p.group_id = ?
+                ORDER BY decks DESC, c.id
+            `),
+
+            allPrintGroups: db.prepare(`
+                SELECT p.group_id AS groupId, p.card_id AS cardId
+                FROM card_print p JOIN card c ON c.id = p.card_id
+            `),
+
             searchCards: db.prepare(`
                 SELECT c.id, c.name, c.set_ AS setCode, c.number, c.kind,
                        COUNT(cp.card_id) AS decks
@@ -595,6 +663,59 @@ export class Store {
             totals: this.stmt.allDeckCardTotals.all(since),
             counts: this.stmt.allDeckCounts.all(since),
         };
+    }
+
+    getGroupResults(cardIds, { limit = 150 } = {}) {
+        return this.stmt.groupResults.all(JSON.stringify(cardIds), limit);
+    }
+
+    countGroupDecks(cardIds) {
+        return this.stmt.countGroupDecks.get(JSON.stringify(cardIds)).n;
+    }
+
+    cardsWithoutPrints(limit = -1) {
+        return this.stmt.cardsWithoutPrints.all(limit);
+    }
+
+    /**
+     * Record that these printings are all one card.
+     *
+     * The group id is the alphabetically first print, including printings this corpus
+     * has never seen — that keeps the id stable no matter which prints get played, and
+     * every print of the card resolves to the same one.
+     */
+    savePrintGroup(cardId, prints) {
+        const groupId = [...prints].sort()[0] ?? cardId;
+        const now = new Date().toISOString();
+        this.db.exec('BEGIN');
+        try {
+            // Every print named on the page joins the group, so looking up one print
+            // settles all of them and the rest are never fetched.
+            for (const id of new Set([...prints, cardId])) {
+                this.stmt.setPrintGroup.run(id, groupId, id === cardId ? now : null);
+            }
+            this.db.exec('COMMIT');
+        } catch (err) {
+            this.db.exec('ROLLBACK');
+            throw err;
+        }
+    }
+
+    printGroupOf(cardId) {
+        return this.stmt.printGroupOf.get(cardId)?.group_id ?? null;
+    }
+
+    printsInGroup(groupId) {
+        return this.stmt.printsInGroup.all(groupId);
+    }
+
+    printStats() {
+        return this.db.prepare(`
+            SELECT (SELECT COUNT(*) FROM card) AS cards,
+                   (SELECT COUNT(*) FROM card_print WHERE fetched_at IS NOT NULL) AS looked_up,
+                   (SELECT COUNT(DISTINCT group_id) FROM card_print
+                     WHERE card_id IN (SELECT id FROM card)) AS groups
+        `).get();
     }
 
     cardIndexStats() {

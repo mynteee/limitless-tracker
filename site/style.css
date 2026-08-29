@@ -471,3 +471,7 @@ a.crow:hover { background: var(--accent-soft); }
 }
 .mini-card { width: 30px; height: 42px; object-fit: cover; border-radius: 3px; flex: none; }
 .browse a + a { margin-left: 1.25rem; }
+
+/* Other printings of the same card. */
+.prints { font-size: .875rem; margin: .4rem 0 0; }
+.prints a { color: inherit; }

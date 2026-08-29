@@ -378,7 +378,16 @@ function cardResultRows(rows) {
 
 async function renderCard(id) {
     view.innerHTML = `<p class="empty">Loading…</p>`;
-    const card = await getJson(`data/cards/${shard(id.toLowerCase())}/${encodeURIComponent(id)}.json`);
+    const load = (cid) =>
+        getJson(`data/cards/${shard(cid.toLowerCase())}/${encodeURIComponent(cid)}.json`);
+
+    let card = await load(id);
+    // Reprints share one page. Any other printing is published as a stub pointing at it,
+    // so an old link or a typed set code still lands on the card rather than a 404.
+    if (card?.alias) {
+        history.replaceState(null, '', `#/c/${encodeURIComponent(card.alias)}`);
+        card = await load(card.alias);
+    }
     if (!card) {
         view.innerHTML = `<p class="empty">No card <b>${esc(id)}</b> in this dataset.</p>`;
         return;
@@ -406,6 +415,10 @@ async function renderCard(id) {
           <h1>${esc(card.name)}</h1>
           <p class="muted">${esc(card.setCode)}-${esc(card.number)} · ${esc(card.kind)}</p>
           <div class="stat-row"><span><b>${card.decks.toLocaleString()}</b> decklists</span></div>
+          ${card.prints?.length > 1 ? `<p class="prints">Also printed as
+            ${card.prints.slice(1).map((p) => `<a href="${esc(cardPage(p.setCode, p.number))}"
+              target="_blank" rel="noopener">${esc(p.id)}</a>`).join(', ')}
+            <span class="muted">— counted together here</span></p>` : ''}
         </div>
       </div>
 
