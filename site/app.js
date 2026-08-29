@@ -62,17 +62,12 @@ function deckIcons(deck, cls = '') {
 
 /* ── search ───────────────────────────────────────────────────────────────── */
 
-/** Which kind of result the search is narrowed to: all | player | deck | card. */
-let searchType = 'all';
-
 /**
  * How well an index entry answers what was typed.
  *
  * The published buckets are sorted without knowing the search term, so ordering by
- * relevance has to happen here. Whole-name matches dominate, because someone typing
- * "dragapult" means the archetype — not a player called "DJDragapult12" who merely
- * contains the word. Archetypes and cards then get a small edge over players for the
- * same reason: a bare noun is usually the name of a thing, not of a person.
+ * relevance has to happen here: an exact name beats a prefix, which beats matching a
+ * word somewhere in the middle.
  */
 function relevance(entry, term) {
     const names = [entry.handle, ...(entry.names ?? [entry.name])]
@@ -84,8 +79,6 @@ function relevance(entry, term) {
     else if (names.some((n) => n.startsWith(term))) score += 50;
     else if (names.some((n) => n.split(/[^a-z0-9]+/).includes(term))) score += 25;
 
-    if (entry.type === 'deck') score += 12;
-    else if (entry.type === 'card') score += 8;
     return score;
 }
 
@@ -95,58 +88,23 @@ async function runSearch(term) {
         view.innerHTML = `<p class="empty">Type at least two characters.</p>`;
         return;
     }
-    // Cards are deliberately excluded here and searched from their own page: mixing
-    // 2,160 card names into player results buries the people someone came to find.
+    // Players only. Decks and cards each have their own page and their own box: one
+    // index still holds all three, but mixing 133 archetypes and 2,160 card names into
+    // these results buries the person someone actually came to find.
     const bucket = await getJson(`data/search/${shard(t)}.json`);
-    const all = (bucket ?? [])
-        .filter((e) => e.type !== 'card' && matchesEntry(e, t))
-        .sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events);
+    const hits = (bucket ?? [])
+        .filter((e) => !e.type && matchesEntry(e, t))
+        .sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events)
+        .slice(0, 60);
 
-    if (all.length === 0) {
-        view.innerHTML = `<p class="empty">Nothing matching “${esc(term)}”.</p>`;
+    if (hits.length === 0) {
+        view.innerHTML = `<p class="empty">No players matching “${esc(term)}”.</p>`;
         return;
     }
 
-    // One index holds all three kinds, so a card can sit well below a wall of players
-    // who happen to share a word. These narrow the results to one kind.
-    const counts = { all: all.length, player: 0, deck: 0 };
-    for (const e of all) counts[e.type ?? 'player']++;
-
-    // A filter with no matches for this term would strand the user on an empty list.
-    if (searchType !== 'all' && counts[searchType] === 0) searchType = 'all';
-
-    const hits = (searchType === 'all'
-        ? all
-        : all.filter((e) => (e.type ?? 'player') === searchType)
-    ).slice(0, 60);
-
-    const tabs = [['all', 'All'], ['player', 'Players'], ['deck', 'Decks']]
-        .map(([key, label]) => `<button class="chip ${searchType === key ? 'on' : ''}"
-            data-type="${key}" ${counts[key] === 0 ? 'disabled' : ''}>
-            ${label} <span class="n">${counts[key]}</span></button>`)
-        .join('');
-
-    view.innerHTML = `<div class="chips search-tabs">${tabs}</div>
+    view.innerHTML = `
       <div class="results">${hits
         .map((e) => {
-            // One index holds players, archetypes and cards; each links somewhere else.
-            if (e.type === 'card') {
-                return `<a class="result" href="#/c/${encodeURIComponent(e.handle)}">
-                    <span class="tag card">card</span>
-                    <span class="name">${esc(e.name)}</span>
-                    <span class="handle">${esc(e.handle)}</span>
-                    <span class="spacer"></span>
-                    <span class="count">${e.events.toLocaleString()} decklists</span>
-                </a>`;
-            }
-            if (e.type === 'deck') {
-                return `<a class="result" href="#/d/${encodeURIComponent(e.handle)}">
-                    <span class="tag deck">deck</span>
-                    <span class="name">${esc(e.name)}</span>
-                    <span class="spacer"></span>
-                    <span class="count">${e.events.toLocaleString()} decks · last ${esc(e.last)}</span>
-                </a>`;
-            }
             // Surface that a player has used other names, so a hit on an outdated one
             // does not look like the wrong person.
             const alias = e.names?.length > 1
@@ -161,13 +119,6 @@ async function runSearch(term) {
             </a>`;
         })
         .join('')}</div>`;
-
-    view.querySelectorAll('.search-tabs .chip').forEach((b) => {
-        b.addEventListener('click', () => {
-            searchType = b.dataset.type;
-            runSearch(term);
-        });
-    });
 }
 
 /* ── player page ──────────────────────────────────────────────────────────── */
@@ -649,14 +600,38 @@ async function renderArchetypeList() {
       <h1 class="page-title">Archetypes</h1>
       <p class="muted">${list.length} archetypes across
         ${list.reduce((a, x) => a + x.decks, 0).toLocaleString()} decklists</p>
-      <div class="results">${list.map((a) => `
-        <a class="result" href="#/d/${encodeURIComponent(a.id)}">
-          <span class="ico">${deckIcons(a)}</span>
-          <span class="name">${esc(a.name)}</span>
-          ${a.variants > 1 ? `<span class="alias">${a.variants} variants</span>` : ''}
-          <span class="spacer"></span>
-          <span class="count">${a.decks.toLocaleString()} decks · last ${esc(a.lastSeen)}</span>
-        </a>`).join('')}</div>`;
+      <form id="deck-form" class="inline-search" role="search">
+        <input id="dq" type="search" placeholder="Filter archetypes…"
+               aria-label="Filter archetypes" spellcheck="false">
+      </form>
+      <div id="deck-results"></div>`;
+
+    const box = document.getElementById('deck-results');
+    const dq = document.getElementById('dq');
+
+    // The whole list is one small file, so this filters in memory rather than going
+    // back to the search index — instant, and it matches variant names too.
+    const draw = (term) => {
+        const t = term.trim().toLowerCase();
+        const hits = !t ? list : list.filter((a) =>
+            a.id.includes(t) || a.name.toLowerCase().includes(t));
+
+        box.innerHTML = hits.length === 0
+            ? `<p class="empty">No archetypes matching “${esc(term)}”.</p>`
+            : `<div class="results">${hits.map((a) => `
+                <a class="result" href="#/d/${encodeURIComponent(a.id)}">
+                  <span class="ico">${deckIcons(a)}</span>
+                  <span class="name">${esc(a.name)}</span>
+                  ${a.variants > 1 ? `<span class="alias">${a.variants} variants</span>` : ''}
+                  <span class="spacer"></span>
+                  <span class="count">${a.decks.toLocaleString()} decks · last ${esc(a.lastSeen)}</span>
+                </a>`).join('')}</div>`;
+    };
+
+    document.getElementById('deck-form').addEventListener('submit', (e) => e.preventDefault());
+    dq.addEventListener('input', () => draw(dq.value));
+    draw('');
+    dq.focus();
 }
 
 /* ── routing ──────────────────────────────────────────────────────────────── */

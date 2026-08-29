@@ -12,9 +12,9 @@ time, and each decklist rendered the way Limitless renders it.
 ## Using the site
 
 The published site is static and answers everything from pre-built data, so it stays fast
-no matter how many people use it. The main search box covers **players and decks**, with
-tabs to narrow to one kind. **Cards have their own search** at `#/cards`, kept separate so
-2,160 card names cannot bury the person you were looking for.
+no matter how many people use it. Each kind of thing has its own box: the top bar searches
+**players**, `#/decks` filters the archetype list, and `#/cards` searches cards. They are
+kept apart so 133 archetypes and 2,160 card names cannot bury the person you came to find.
 
 **Players** — search by handle (`awsomeguy1975`), display name (`Mark Miller`), or a name
 someone used months ago; renames never hide a player. Click any event to expand the
