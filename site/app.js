@@ -383,7 +383,7 @@ async function renderCard(id) {
     // Reprints share one page. Any other printing is published as a stub pointing at it,
     // so an old link or a typed set code still lands on the card rather than a 404.
     if (card?.alias) {
-        history.replaceState(null, '', `#/c/${encodeURIComponent(card.alias)}`);
+        window.history.replaceState(null, '', `#/c/${encodeURIComponent(card.alias)}`);
         card = await load(card.alias);
     }
     if (!card) {
@@ -395,7 +395,7 @@ async function renderCard(id) {
     const latest = card.results.filter((r) => r.tournamentId === card.latestTournament);
     const rest = card.results.filter((r) => r.tournamentId !== card.latestTournament);
 
-    const history = rest.map((r, i) => {
+    const historyRows = rest.map((r, i) => {
         // Label each event once as the list walks back through them.
         const header = i === 0 || r.tournamentId !== rest[i - 1].tournamentId
             ? `<div class="crow sub"><span></span><span class="ev">${esc(r.tournament)}</span>
@@ -428,7 +428,7 @@ async function renderCard(id) {
       </div>
 
       ${rest.length ? `<button class="more" id="card-more">Show full history (${rest.length} more)</button>
-      <div class="ctable" id="card-history" hidden>${history}</div>` : ''}
+      <div class="ctable" id="card-history" hidden>${historyRows}</div>` : ''}
 
       ${card.decks > card.results.length
         ? `<p class="muted note">Showing the ${card.results.length} most recent of
