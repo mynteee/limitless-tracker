@@ -475,3 +475,6 @@ a.crow:hover { background: var(--accent-soft); }
 /* Other printings of the same card. */
 .prints { font-size: .875rem; margin: .4rem 0 0; }
 .prints a { color: inherit; }
+
+/* Variant rows in the split view sit visually under their archetype. */
+.result .name.sub { opacity: .92; }

@@ -20,10 +20,12 @@ kept apart so 133 archetypes and 2,160 card names cannot bury the person you cam
 someone used months ago; renames never hide a player. Click any event to expand the
 decklist: **List** shows it in Limitless' own format, **Cards** shows the actual card art.
 
-**Decks** — every archetype is at `#/decks`, or search its name. An archetype page shows
-the average decklist as card art badged with the mean number of copies, and its recent
-placements. Both can be scoped to the last 30 days, 90 days or all time, and filtered to
-a single variant.
+**Decks** — every archetype is at `#/decks`, with a filter box, a date window, and a
+**Split variants** toggle that flattens the list to one row per variant ranked across all
+archetypes. An archetype page shows the average decklist as card art badged with the mean
+number of copies, plus its recent placements. Both scope to the last 30 days, 90 days or
+all time, and filter to a single variant — every variant has its own average however few
+decks it has, with the sample size shown rather than being silently replaced.
 
 **Cards** — search them at `#/cards`. A card page lists the decklists that ran it, newest
 event first and sorted by placing, with the rest of its history behind a toggle. Clicking

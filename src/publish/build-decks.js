@@ -20,10 +20,11 @@ const CARD_RESULT_LIMIT = 150;
 const ARCHETYPE_RESULT_LIMIT = 120;
 
 /**
- * A variant gets its own averages only above this many decklists. Below it the sample
- * is too thin to mean much, and every extra variant multiplies the page by a window.
+ * Every variant gets its own averages, however thin the sample. A five-deck variant
+ * still describes those five decks accurately, and the page shows the count alongside
+ * so a small sample is visible rather than silently swapped for the whole archetype.
  */
-const VARIANT_AVERAGE_MIN = 100;
+const VARIANT_AVERAGE_MIN = 1;
 
 const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value));
 
@@ -213,7 +214,7 @@ export function buildArchetypes(store, {
 
             // Per-variant averages power the variant filter without another fetch.
             for (const v of arch.variants) {
-                if (v.decks < VARIANT_AVERAGE_MIN || arch.variants.length === 1) continue;
+                if (arch.variants.length === 1) continue;
                 const avg = averageFor([v.deckId], days);
                 if (avg) entry[v.deckId] = avg;
             }
@@ -230,7 +231,7 @@ export function buildArchetypes(store, {
                 name: v.deckName,
                 icons: deckIcons(JSON.stringify(v.icons)),
                 decks: v.decks,
-                hasAverage: v.decks >= VARIANT_AVERAGE_MIN && arch.variants.length > 1,
+                hasAverage: arch.variants.length > 1,
             })),
             windows: WINDOWS,
             averages,
@@ -253,13 +254,29 @@ export function buildArchetypes(store, {
         bytes += json.length;
 
         const lastSeen = arch.variants.reduce((m, v) => (v.lastSeen > m ? v.lastSeen : m), '');
+
+        /** Decklists in each window, so the list can be scoped without another fetch. */
+        const windowCounts = (deckIds) => Object.fromEntries(WINDOWS.map((days) => {
+            const { counts } = windows.get(days);
+            return [days, deckIds.reduce((a, id) => a + (counts.get(id) ?? 0), 0)];
+        }));
+
         list.push({
             id: arch.id,
             name: arch.name,
             icons: arch.icons,
             decks: arch.decks,
-            variants: arch.variants.length,
+            windows: windowCounts(variantIds),
             lastSeen: lastSeen.slice(0, 10),
+            // Carried so the list can split into variants without fetching each page.
+            variants: arch.variants.map((v) => ({
+                id: v.deckId,
+                name: v.deckName,
+                icons: deckIcons(JSON.stringify(v.icons)),
+                decks: v.decks,
+                windows: windowCounts([v.deckId]),
+                lastSeen: String(v.lastSeen ?? '').slice(0, 10),
+            })),
         });
 
         const entry = {

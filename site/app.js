@@ -463,7 +463,7 @@ function archetypeResultRows(rows) {
       </div>`).join('');
 }
 
-async function renderArchetype(id) {
+async function renderArchetype(id, preselectVariant = null) {
     view.innerHTML = `<p class="empty">Loading…</p>`;
     const [arch] = await Promise.all([
         getJson(`data/archetypes/${encodeURIComponent(id)}.json`),
@@ -476,13 +476,16 @@ async function renderArchetype(id) {
 
     // Both selectors only filter data already fetched, so switching is instant.
     let win = arch.windows.find((w) => String(w) in arch.averages) ?? 0;
-    let variant = 'all';
+    let variant = arch.variants.some((v) => v.id === preselectVariant) ? preselectVariant : 'all';
     let showFringe = false;
 
     const draw = () => {
+        // Every variant is published with its own average, however small the sample,
+        // so this only falls back when the variant genuinely played nothing in the
+        // window — never because the sample was judged too thin.
         const forVariant = arch.averages[win]?.[variant];
-        const avg = forVariant ?? arch.averages[win]?.all ?? null;
-        const fellBack = variant !== 'all' && !forVariant;
+        const avg = forVariant ?? (variant === 'all' ? arch.averages[win]?.all ?? null : null);
+        const emptyVariant = variant !== 'all' && !forVariant;
         const results = variant === 'all'
             ? arch.results
             : arch.results.filter((r) => r.variant === variant);
@@ -505,10 +508,13 @@ async function renderArchetype(id) {
 
           <h2>Average decklist</h2>
           ${avg
-            ? `<p class="muted">${avg.total.toLocaleString()} decklists · ${esc(WINDOW_LABEL[win] ?? win + ' days')}${
-                fellBack ? ' · too few lists for that variant, showing the whole archetype' : ''}</p>
+            ? `<p class="muted">${avg.total.toLocaleString()} decklist${avg.total === 1 ? '' : 's'}
+               · ${esc(WINDOW_LABEL[win] ?? win + ' days')}${
+                 avg.total < 20 ? ' · small sample' : ''}</p>
                ${renderAverage(avg.cards, showFringe)}`
-            : `<p class="empty">No decklists in this window.</p>`}
+            : `<p class="empty">${emptyVariant
+                ? 'That variant was not played in this window.'
+                : 'No decklists in this window.'}</p>`}
 
           <h2>Latest results</h2>
           ${results.length
@@ -596,41 +602,95 @@ async function renderArchetypeList() {
     const list = await getJson('data/archetypes.json');
     if (!list) { view.innerHTML = `<p class="empty">No archetype data.</p>`; return; }
 
+    // Every control filters data already fetched — one small file holds the whole list
+    // with its variants and per-window counts, so switching is instant.
+    let win = 0;
+    let split = false;
+
     view.innerHTML = `
       <h1 class="page-title">Archetypes</h1>
-      <p class="muted">${list.length} archetypes across
-        ${list.reduce((a, x) => a + x.decks, 0).toLocaleString()} decklists</p>
+      <div class="controls">
+        <div class="chips" id="adeck-win"></div>
+        <div class="chips"><button class="chip" id="adeck-split">Split variants</button></div>
+      </div>
       <form id="deck-form" class="inline-search" role="search">
         <input id="dq" type="search" placeholder="Filter archetypes…"
                aria-label="Filter archetypes" spellcheck="false">
       </form>
+      <p class="muted" id="adeck-count"></p>
       <div id="deck-results"></div>`;
 
     const box = document.getElementById('deck-results');
     const dq = document.getElementById('dq');
+    const winBox = document.getElementById('adeck-win');
+    const splitBtn = document.getElementById('adeck-split');
 
-    // The whole list is one small file, so this filters in memory rather than going
-    // back to the search index — instant, and it matches variant names too.
-    const draw = (term) => {
-        const t = term.trim().toLowerCase();
-        const hits = !t ? list : list.filter((a) =>
-            a.id.includes(t) || a.name.toLowerCase().includes(t));
+    const countIn = (entry) => entry.windows?.[win] ?? (win === 0 ? entry.decks : 0);
 
-        box.innerHTML = hits.length === 0
-            ? `<p class="empty">No archetypes matching “${esc(term)}”.</p>`
-            : `<div class="results">${hits.map((a) => `
-                <a class="result" href="#/d/${encodeURIComponent(a.id)}">
-                  <span class="ico">${deckIcons(a)}</span>
-                  <span class="name">${esc(a.name)}</span>
-                  ${a.variants > 1 ? `<span class="alias">${a.variants} variants</span>` : ''}
-                  <span class="spacer"></span>
-                  <span class="count">${a.decks.toLocaleString()} decks · last ${esc(a.lastSeen)}</span>
-                </a>`).join('')}</div>`;
+    const row = (e, href, sub) => `
+      <a class="result" href="#/d/${href}">
+        <span class="ico">${deckIcons(e)}</span>
+        <span class="name${sub ? ' sub' : ''}">${esc(e.name)}</span>
+        ${!sub && e.variants.length > 1 ? `<span class="alias">${e.variants.length} variants</span>` : ''}
+        <span class="spacer"></span>
+        <span class="count">${countIn(e).toLocaleString()} decks${
+          e.lastSeen ? ` · last ${esc(e.lastSeen)}` : ''}</span>
+      </a>`;
+
+    const draw = () => {
+        winBox.innerHTML = [[0, 'All time'], [90, 'Last 90 days'], [30, 'Last 30 days']]
+            .map(([w, label]) => `<button class="chip ${w === win ? 'on' : ''}" data-win="${w}">${label}</button>`)
+            .join('');
+        splitBtn.classList.toggle('on', split);
+
+        const t = dq.value.trim().toLowerCase();
+        const matches = (e) => !t || e.id.includes(t) || e.name.toLowerCase().includes(t);
+
+        let rows;
+        let shown;
+        if (split) {
+            // Flattened to one row per variant, ranked across archetypes rather than
+            // nested, so the window ordering still means something.
+            const flat = list.flatMap((a) => a.variants
+                .filter((v) => matches(a) || matches(v))
+                .map((v) => ({ ...v, parent: a })));
+            const live = flat.filter((v) => countIn(v) > 0).sort((a, b) => countIn(b) - countIn(a));
+            shown = live.length;
+            rows = live.map((v) => row(
+                { ...v, variants: [] },
+                // Pages are keyed by base archetype, so a variant links to its parent
+                // with itself preselected rather than to an id that has no page. Each
+                // segment is encoded on its own — encoding the pair would escape the
+                // separator to %2F and the route could never split it apart again.
+                `${encodeURIComponent(v.parent.id)}/${encodeURIComponent(v.id)}`,
+                true,
+            )).join('');
+        } else {
+            const live = list.filter((a) => matches(a) && countIn(a) > 0)
+                .sort((a, b) => countIn(b) - countIn(a));
+            shown = live.length;
+            rows = live.map((a) => row(a, encodeURIComponent(a.id), false)).join('');
+        }
+
+        document.getElementById('adeck-count').textContent =
+            `${shown} ${split ? 'variants' : 'archetypes'}` +
+            (win ? ` played in the last ${win} days` : ' all time');
+        box.innerHTML = shown === 0
+            ? `<p class="empty">Nothing matching that.</p>`
+            : `<div class="results">${rows}</div>`;
     };
 
     document.getElementById('deck-form').addEventListener('submit', (e) => e.preventDefault());
-    dq.addEventListener('input', () => draw(dq.value));
-    draw('');
+    dq.addEventListener('input', draw);
+    winBox.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-win]');
+        if (!b) return;
+        win = Number(b.dataset.win);
+        draw();
+    });
+    splitBtn.addEventListener('click', () => { split = !split; draw(); });
+
+    draw();
     dq.focus();
 }
 
@@ -650,7 +710,9 @@ function route() {
         renderCard(decodeURIComponent(card[1]));
     } else if (deck) {
         input.value = '';
-        renderArchetype(decodeURIComponent(deck[1]));
+        // #/d/<archetype> or #/d/<archetype>/<variant>
+        const [base, chosen] = deck[1].split('/').map(decodeURIComponent);
+        renderArchetype(base, chosen ?? null);
     } else if (hash === '/decks') {
         input.value = '';
         renderArchetypeList();
