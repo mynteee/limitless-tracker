@@ -2,6 +2,55 @@
 export const CARD_KINDS = ['pokemon', 'trainer', 'energy'];
 
 /**
+ * Builds the card-index statements in scoped and unscoped form from one template, so
+ * the two can never drift while still each getting a query plan that suits them.
+ */
+function cardIndexStatements(db) {
+    const cards = (where) => `
+        INSERT INTO card (id, set_, number, name, kind)
+        SELECT DISTINCT
+            json_extract(c.value, '$.set') || '-' || json_extract(c.value, '$.number'),
+            json_extract(c.value, '$.set'),
+            json_extract(c.value, '$.number'),
+            json_extract(c.value, '$.name'),
+            ?1
+        FROM standing s, json_each(s.decklist, '$.' || ?1) c
+        WHERE s.decklist IS NOT NULL ${where}
+        ON CONFLICT(id) DO NOTHING`;
+
+    const plays = (where) => `
+        INSERT INTO card_play (card_id, tournament_id, player, count, date)
+        SELECT json_extract(c.value, '$.set') || '-' || json_extract(c.value, '$.number'),
+               s.tournament_id,
+               s.player,
+               -- A list can split one card across entries; sum rather than letting the
+               -- second row collide with the first.
+               SUM(json_extract(c.value, '$.count')),
+               s.date
+        FROM standing s
+        JOIN json_each(s.decklist, '$.' || ?1) c
+        WHERE s.decklist IS NOT NULL ${where}
+        GROUP BY 1, 2, 3
+        ON CONFLICT(card_id, tournament_id, player) DO UPDATE SET count = excluded.count`;
+
+    const decks = (where) => `
+        INSERT INTO deck (id, name, icons)
+        SELECT DISTINCT s.deck_id, s.deck_name, s.deck_icons
+        FROM standing s
+        WHERE s.deck_id IS NOT NULL ${where}
+        ON CONFLICT(id) DO UPDATE SET name = excluded.name, icons = excluded.icons`;
+
+    return {
+        indexCardsOne:  db.prepare(cards('AND s.tournament_id = ?2')),
+        indexCardsAll:  db.prepare(cards('')),
+        indexPlaysOne:  db.prepare(plays('AND s.tournament_id = ?2')),
+        indexPlaysAll:  db.prepare(plays('')),
+        indexDecksOne:  db.prepare(decks('AND s.tournament_id = ?1')),
+        indexDecksAll:  db.prepare(decks('')),
+    };
+}
+
+/**
  * Prepared statements over the local store.
  *
  * Everything the crawler and the CLI need lives here, so SQL never leaks into the
@@ -58,50 +107,16 @@ export class Store {
 
             deleteCardPlays: db.prepare(`DELETE FROM card_play WHERE tournament_id = ?`),
 
-            // ?1 = tournament id, or NULL for the whole corpus.
-            indexDecks: db.prepare(`
-                INSERT INTO deck (id, name, icons)
-                SELECT DISTINCT s.deck_id, s.deck_name, s.deck_icons
-                FROM standing s
-                WHERE s.deck_id IS NOT NULL AND (?1 IS NULL OR s.tournament_id = ?1)
-                ON CONFLICT(id) DO UPDATE SET name = excluded.name, icons = excluded.icons
-            `),
-
-            // Derive the card tables straight from the decklist JSON. The same two
-            // statements serve both the per-tournament path during a crawl and the
-            // bulk rebuild, so the two can never drift: pass a tournament id to scope
-            // it, or NULL to do the whole corpus.
-            // ?1 = kind (pokemon|trainer|energy), ?2 = tournament id or NULL for all.
-            indexCards: db.prepare(`
-                INSERT INTO card (id, set_, number, name, kind)
-                SELECT DISTINCT
-                    json_extract(c.value, '$.set') || '-' || json_extract(c.value, '$.number'),
-                    json_extract(c.value, '$.set'),
-                    json_extract(c.value, '$.number'),
-                    json_extract(c.value, '$.name'),
-                    ?1
-                FROM standing s, json_each(s.decklist, '$.' || ?1) c
-                WHERE s.decklist IS NOT NULL AND (?2 IS NULL OR s.tournament_id = ?2)
-                ON CONFLICT(id) DO NOTHING
-            `),
-
-            indexCardPlays: db.prepare(`
-                INSERT INTO card_play (card_id, tournament_id, player, count, date)
-                SELECT json_extract(c.value, '$.set') || '-' || json_extract(c.value, '$.number'),
-                       s.tournament_id,
-                       s.player,
-                       -- A list can split one card across entries; sum rather than
-                       -- letting the second row collide with the first.
-                       SUM(json_extract(c.value, '$.count')),
-                       t.date
-                FROM standing s
-                JOIN tournament t ON t.id = s.tournament_id
-                JOIN json_each(s.decklist, '$.' || ?1) c
-                WHERE s.decklist IS NOT NULL AND (?2 IS NULL OR s.tournament_id = ?2)
-                GROUP BY 1, 2, 3
-                ON CONFLICT(card_id, tournament_id, player)
-                    DO UPDATE SET count = excluded.count
-            `),
+            // Derive the card tables straight from the decklist JSON.
+            //
+            // Each of these exists twice: once scoped to a tournament, once over the
+            // whole corpus. Folding both into one statement with `(?2 IS NULL OR
+            // tournament_id = ?2)` reads naturally but is a trap — SQLite cannot use an
+            // index through that OR, so the scoped form degraded to a full scan of
+            // `standing` per tournament. With a decklist blob inline on every row that
+            // took ~10s each, and a 3,841-tournament repair ran for five hours before CI
+            // killed it. Plain equality gets SEARCH ... USING PRIMARY KEY instead.
+            ...cardIndexStatements(db),
 
             insertStanding: db.prepare(`
                 INSERT INTO standing (
@@ -537,7 +552,6 @@ export class Store {
             // Same transaction as the standings themselves, so the reverse index can
             // never be left describing decklists that were rolled back.
             this.indexCards(tournamentId);
-            this.stmt.indexDecks.run(tournamentId);
 
             this.stmt.markFetched.run(
                 new Date().toISOString(), rows.length, hasDecklists ? 1 : 0, tournamentId,
@@ -619,9 +633,16 @@ export class Store {
      */
     indexCards(tournamentId = null) {
         for (const kind of CARD_KINDS) {
-            this.stmt.indexCards.run(kind, tournamentId);
-            this.stmt.indexCardPlays.run(kind, tournamentId);
+            if (tournamentId === null) {
+                this.stmt.indexCardsAll.run(kind);
+                this.stmt.indexPlaysAll.run(kind);
+            } else {
+                this.stmt.indexCardsOne.run(kind, tournamentId);
+                this.stmt.indexPlaysOne.run(kind, tournamentId);
+            }
         }
+        if (tournamentId === null) this.stmt.indexDecksAll.run();
+        else this.stmt.indexDecksOne.run(tournamentId);
     }
 
     /**
@@ -653,20 +674,27 @@ export class Store {
         const missing = this.unindexedTournaments();
         if (missing.length === 0) return 0;
 
-        this.db.exec('BEGIN');
-        try {
-            let done = 0;
-            for (const id of missing) {
-                this.indexCards(id);
-                this.stmt.indexDecks.run(id);
-                if (++done % 100 === 0) onProgress({ done, total: missing.length });
+        // Committed in batches rather than as one transaction. A single transaction
+        // around the whole repair means a job killed part-way rolls all of it back and
+        // the next run starts from zero — which is exactly what a cancelled CI build
+        // did after five hours. Batching keeps whatever finished, so a repair can be
+        // interrupted and resumed as many times as it takes.
+        const BATCH = 50;
+        let done = 0;
+        for (let i = 0; i < missing.length; i += BATCH) {
+            const batch = missing.slice(i, i + BATCH);
+            this.db.exec('BEGIN');
+            try {
+                for (const id of batch) this.indexCards(id);
+                this.db.exec('COMMIT');
+            } catch (err) {
+                this.db.exec('ROLLBACK');
+                throw err;
             }
-            this.db.exec('COMMIT');
-        } catch (err) {
-            this.db.exec('ROLLBACK');
-            throw err;
+            done += batch.length;
+            onProgress({ done, total: missing.length });
         }
-        return missing.length;
+        return done;
     }
 
     /** Drop and rebuild the whole card index. Derived data — safe to redo at any time. */
@@ -676,7 +704,6 @@ export class Store {
             this.db.exec('DELETE FROM card_play');
             this.db.exec('DELETE FROM card');
             this.indexCards(null);
-            this.stmt.indexDecks.run(null);
             this.db.exec('COMMIT');
         } catch (err) {
             this.db.exec('ROLLBACK');
