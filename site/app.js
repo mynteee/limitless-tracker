@@ -62,6 +62,9 @@ function deckIcons(deck, cls = '') {
 
 /* ── search ───────────────────────────────────────────────────────────────── */
 
+/** Which kind of result the search is narrowed to: all | player | deck | card. */
+let searchType = 'all';
+
 /**
  * How well an index entry answers what was typed.
  *
@@ -93,17 +96,36 @@ async function runSearch(term) {
         return;
     }
     const bucket = await getJson(`data/search/${shard(t)}.json`);
-    const hits = (bucket ?? [])
+    const all = (bucket ?? [])
         .filter((e) => matchesEntry(e, t))
-        .sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events)
-        .slice(0, 60);
+        .sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events);
 
-    if (hits.length === 0) {
+    if (all.length === 0) {
         view.innerHTML = `<p class="empty">Nothing matching “${esc(term)}”.</p>`;
         return;
     }
 
-    view.innerHTML = `<div class="results">${hits
+    // One index holds all three kinds, so a card can sit well below a wall of players
+    // who happen to share a word. These narrow the results to one kind.
+    const counts = { all: all.length, player: 0, deck: 0, card: 0 };
+    for (const e of all) counts[e.type ?? 'player']++;
+
+    // A filter with no matches for this term would strand the user on an empty list.
+    if (searchType !== 'all' && counts[searchType] === 0) searchType = 'all';
+
+    const hits = (searchType === 'all'
+        ? all
+        : all.filter((e) => (e.type ?? 'player') === searchType)
+    ).slice(0, 60);
+
+    const tabs = [['all', 'All'], ['player', 'Players'], ['deck', 'Decks'], ['card', 'Cards']]
+        .map(([key, label]) => `<button class="chip ${searchType === key ? 'on' : ''}"
+            data-type="${key}" ${counts[key] === 0 ? 'disabled' : ''}>
+            ${label} <span class="n">${counts[key]}</span></button>`)
+        .join('');
+
+    view.innerHTML = `<div class="chips search-tabs">${tabs}</div>
+      <div class="results">${hits
         .map((e) => {
             // One index holds players, archetypes and cards; each links somewhere else.
             if (e.type === 'card') {
@@ -137,6 +159,13 @@ async function runSearch(term) {
             </a>`;
         })
         .join('')}</div>`;
+
+    view.querySelectorAll('.search-tabs .chip').forEach((b) => {
+        b.addEventListener('click', () => {
+            searchType = b.dataset.type;
+            runSearch(term);
+        });
+    });
 }
 
 /* ── player page ──────────────────────────────────────────────────────────── */

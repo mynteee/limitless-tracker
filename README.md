@@ -12,15 +12,20 @@ time, and each decklist rendered the way Limitless renders it.
 ## Using the site
 
 The published site is static and answers everything from pre-built data, so it stays fast
-no matter how many people use it. Search by:
+no matter how many people use it. One search box covers **players, decks and cards**, and
+the results can be narrowed to one kind with the tabs above them.
 
-- **handle** — `awsomeguy1975`
-- **display name** — `Mark Miller`
-- **an old display name** — players rename themselves often, and searching a name someone
-  used months ago still finds them under their current one
+**Players** — search by handle (`awsomeguy1975`), display name (`Mark Miller`), or a name
+someone used months ago; renames never hide a player. Click any event to expand the
+decklist: **List** shows it in Limitless' own format, **Cards** shows the actual card art.
 
-Click any event to expand the decklist. **List** shows it in Limitless' own format;
-**Cards** shows the actual card images.
+**Decks** — every archetype is at `#/decks`, or search its name. An archetype page shows
+the average decklist as card art badged with the mean number of copies, and its recent
+placements. Both can be scoped to the last 30 days, 90 days or all time, and filtered to
+a single variant.
+
+**Cards** — a card page lists the decklists that ran it, newest event first and sorted by
+placing, with the rest of its history behind a toggle.
 
 ---
 
@@ -140,6 +145,8 @@ node src/cli.js <command>
 | `lookup <player>` | A player's full history in the terminal. |
 | `search <term>` | Find a player by handle or any display name. |
 | `card <name\|SET-NUM>` | Which decklists ran a card, newest event first. `--all` for earlier events. |
+| `decks` | List every archetype, most played first. `--variants` to break them out. |
+| `deck <archetype>` | Average decklist, or `--results` for placements. `--days`, `--variant`. |
 | `reindex` | Rebuild the card index from stored decklists. |
 | `build` | Generate the static site into `dist/`. Needs no network. |
 | `serve` | Preview the built site on <http://localhost:8080>. |
@@ -181,7 +188,7 @@ Add `--deck <tournamentId>` to print a full decklist, or `--json` for raw output
 
 ## What gets collected
 
-By default the crawler keeps **events with 50 or more players that used decklists**, and
+By default the crawler keeps **events with 16 or more players that used decklists**, and
 skips the rest. A small event with no lists submitted is only a ranking, which is not what
 this tool is for.
 

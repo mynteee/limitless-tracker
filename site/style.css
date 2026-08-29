@@ -445,3 +445,8 @@ a.crow:hover { background: var(--accent-soft); }
     .card-head { flex-direction: column; }
     .card-art img { width: 120px; }
 }
+
+/* Result-kind filter above search results. */
+.search-tabs { margin-bottom: .75rem; }
+.search-tabs .chip[disabled] { opacity: .4; cursor: default; }
+.search-tabs .chip[disabled]:hover { background: transparent; }

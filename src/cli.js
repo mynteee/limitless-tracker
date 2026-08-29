@@ -19,7 +19,7 @@ limitless-tracker
     --format <ID>        default STANDARD
     --pages <N>          max listing pages to discover (50 tournaments each)
     --limit <N>          max tournaments to ingest this run
-    --min-players <N>    skip events smaller than this (default 50, 0 disables)
+    --min-players <N>    skip events smaller than this (default 16, 0 disables)
     --since <date>       only tournaments on or after this date (YYYY-MM-DD)
     --until <date>       only tournaments on or before this date
     --all-events         keep events that ran without decklists (off by default)
@@ -271,8 +271,14 @@ function report(api) {
  * and small events are mostly noise, so the default is deliberately selective.
  * `--min-players 0` turns the size filter off.
  */
+/**
+ * Minimum event size to keep. Must stay in step with the crawl workflow's default,
+ * or a local run and CI build different corpora from the same repo — and `prune`,
+ * which reads this same value, would then offer to delete everything CI collected
+ * between the two thresholds.
+ */
 function policyMinPlayers() {
-    if (opts['min-players'] === undefined) return 50;
+    if (opts['min-players'] === undefined) return 16;
     const n = Number(opts['min-players']);
     return Number.isFinite(n) && n > 0 ? n : null;
 }
