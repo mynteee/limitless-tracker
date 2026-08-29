@@ -58,6 +58,15 @@ export class Store {
 
             deleteCardPlays: db.prepare(`DELETE FROM card_play WHERE tournament_id = ?`),
 
+            // ?1 = tournament id, or NULL for the whole corpus.
+            indexDecks: db.prepare(`
+                INSERT INTO deck (id, name, icons)
+                SELECT DISTINCT s.deck_id, s.deck_name, s.deck_icons
+                FROM standing s
+                WHERE s.deck_id IS NOT NULL AND (?1 IS NULL OR s.tournament_id = ?1)
+                ON CONFLICT(id) DO UPDATE SET name = excluded.name, icons = excluded.icons
+            `),
+
             // Derive the card tables straight from the decklist JSON. The same two
             // statements serve both the per-tournament path during a crawl and the
             // bulk rebuild, so the two can never drift: pass a tournament id to scope
@@ -98,8 +107,10 @@ export class Store {
                 INSERT INTO standing (
                     tournament_id, player, name, country, placing,
                     wins, losses, ties, drop_round,
-                    deck_id, deck_name, deck_icons, decklist
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    deck_id, deck_name, deck_icons, decklist,
+                    date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    (SELECT date FROM tournament WHERE id = ?1))
             `),
 
             markFetched: db.prepare(`
@@ -150,6 +161,70 @@ export class Store {
                 JOIN tournament t ON t.id = s.tournament_id
                 WHERE s.player = ?
                 ORDER BY t.date DESC
+            `),
+
+            /** Every deck id the corpus has seen, for grouping into base archetypes. */
+            allDecks: db.prepare(`
+                SELECT d.id AS deckId, d.name AS deckName, d.icons,
+                       agg.decks, agg.firstSeen, agg.lastSeen
+                FROM (
+                    -- Covered entirely by idx_standing_deck(deck_id, date).
+                    SELECT deck_id, COUNT(*) AS decks,
+                           MIN(date) AS firstSeen, MAX(date) AS lastSeen
+                    FROM standing
+                    WHERE deck_id IS NOT NULL
+                    GROUP BY deck_id
+                ) agg
+                JOIN deck d ON d.id = agg.deck_id
+                ORDER BY agg.decks DESC
+            `),
+
+            /**
+             * How many decklists a set of deck ids accounts for in a date window.
+             * The denominator of the average decklist, and it must count decks that
+             * did NOT play a card too, or every average comes out too high.
+             */
+            archetypeDeckCount: db.prepare(`
+                SELECT COUNT(*) AS n
+                FROM standing s
+                WHERE s.deck_id IN (SELECT value FROM json_each(?1))
+                  AND s.decklist IS NOT NULL
+                  AND (?2 IS NULL OR s.date >= ?2)
+                  AND (?3 IS NULL OR s.date <= ?3)
+            `),
+
+            /**
+             * The average decklist: mean copies of each card across every deck of the
+             * archetype in the window, including the decks that ran none of it. That
+             * is what produces the 4.00 / 2.02 / 0.02 figures Limitless shows.
+             */
+            archetypeAverage: db.prepare(`
+                SELECT cp.card_id AS cardId, c.name, c.kind, c.set_ AS setCode, c.number,
+                       SUM(cp.count) AS copies,
+                       COUNT(*) AS decksWith
+                FROM standing s
+                JOIN card_play cp ON cp.tournament_id = s.tournament_id AND cp.player = s.player
+                JOIN card c ON c.id = cp.card_id
+                WHERE s.deck_id IN (SELECT value FROM json_each(?1))
+                  AND (?2 IS NULL OR s.date >= ?2)
+                  AND (?3 IS NULL OR s.date <= ?3)
+                GROUP BY cp.card_id
+                ORDER BY copies DESC
+            `),
+
+            /** Tournament placements for an archetype, newest and best first. */
+            archetypeResults: db.prepare(`
+                SELECT t.id AS tournamentId, t.name AS tournamentName, t.date,
+                       t.players AS fieldSize,
+                       s.player, s.name AS displayName, s.placing,
+                       s.deck_id AS deckId, s.deck_name AS deckName, s.deck_icons AS deckIcons
+                FROM standing s
+                JOIN tournament t ON t.id = s.tournament_id
+                WHERE s.deck_id IN (SELECT value FROM json_each(?1))
+                  AND (?2 IS NULL OR s.date >= ?2)
+                  AND (?3 IS NULL OR s.date <= ?3)
+                ORDER BY s.date DESC, s.placing IS NULL, s.placing ASC
+                LIMIT ?4 OFFSET ?5
             `),
 
             searchCards: db.prepare(`
@@ -333,6 +408,7 @@ export class Store {
             // Same transaction as the standings themselves, so the reverse index can
             // never be left describing decklists that were rolled back.
             this.indexCards(tournamentId);
+            this.stmt.indexDecks.run(tournamentId);
 
             this.stmt.markFetched.run(
                 new Date().toISOString(), rows.length, hasDecklists ? 1 : 0, tournamentId,
@@ -426,11 +502,50 @@ export class Store {
             this.db.exec('DELETE FROM card_play');
             this.db.exec('DELETE FROM card');
             this.indexCards(null);
+            this.stmt.indexDecks.run(null);
             this.db.exec('COMMIT');
         } catch (err) {
             this.db.exec('ROLLBACK');
             throw err;
         }
+    }
+
+    /** Raw deck rows with icons parsed, ready for groupArchetypes(). */
+    allDecks() {
+        return this.stmt.allDecks.all().map((r) => ({
+            ...r,
+            icons: JSON.parse(r.icons ?? '[]'),
+        }));
+    }
+
+    /**
+     * Average copies of each card across an archetype's decklists.
+     * @param {string[]} deckIds every variant to include
+     * @param {{since?: string|null, until?: string|null}} [window]
+     */
+    archetypeAverageDecklist(deckIds, { since = null, until = null } = {}) {
+        const ids = JSON.stringify(deckIds);
+        const total = this.stmt.archetypeDeckCount.get(ids, since, until).n;
+        if (total === 0) return { total: 0, cards: [] };
+
+        const cards = this.stmt.archetypeAverage.all(ids, since, until).map((r) => ({
+            cardId: r.cardId,
+            name: r.name,
+            kind: r.kind,
+            setCode: r.setCode,
+            number: r.number,
+            // Averaged over every deck in the window, not just those running the card.
+            average: r.copies / total,
+            // How often it shows up at all, which distinguishes a 1-of everyone plays
+            // from a 4-of only a few builds run.
+            inclusion: r.decksWith / total,
+            decksWith: r.decksWith,
+        }));
+        return { total, cards };
+    }
+
+    archetypeResults(deckIds, { since = null, until = null, limit = 50, offset = 0 } = {}) {
+        return this.stmt.archetypeResults.all(JSON.stringify(deckIds), since, until, limit, offset);
     }
 
     cardIndexStats() {

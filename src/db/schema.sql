@@ -57,12 +57,27 @@ CREATE TABLE IF NOT EXISTS standing (
     deck_name     TEXT,
     deck_icons    TEXT,   -- JSON array
     decklist      TEXT,   -- JSON blob: { pokemon[], trainer[], energy[] }
+    -- Denormalised from tournament, for the same reason card_play carries it: every
+    -- archetype view is scoped to a date window, and without it SQLite finds all
+    -- 20,000+ standings for an archetype and only then checks each one's date.
+    date          TEXT,
     PRIMARY KEY (tournament_id, player)
 ) WITHOUT ROWID;
 
 -- The index the API refuses to give us. Turns a multi-hour scan of every tournament
 -- into a sub-millisecond lookup, and is the whole reason this project has a database.
 CREATE INDEX IF NOT EXISTS idx_standing_player ON standing(player);
+
+-- One row per distinct deck id, so archetype listings never have to read the standing
+-- table. `standing` is WITHOUT ROWID and carries the decklist blob inline, so grouping
+-- it by deck_id while also selecting the deck name drags ~180MB through the B-tree and
+-- takes 8 seconds. Aggregating deck_id and date alone stays inside the covering index,
+-- and the names come from here.
+CREATE TABLE IF NOT EXISTS deck (
+    id    TEXT PRIMARY KEY,
+    name  TEXT,
+    icons TEXT   -- JSON array
+);
 
 -- One row per distinct card ever played. Names are held here rather than repeated
 -- across millions of play rows.
@@ -99,8 +114,9 @@ CREATE INDEX IF NOT EXISTS idx_card_play_recent ON card_play(card_id, date DESC)
 -- Reaching the standing (and so the placing and deck) from a card.
 CREATE INDEX IF NOT EXISTS idx_card_play_standing ON card_play(tournament_id, player);
 
--- Supports archetype queries ("who played Dragapult Dusknoir?") in later phases.
-CREATE INDEX IF NOT EXISTS idx_standing_deck ON standing(deck_id) WHERE deck_id IS NOT NULL;
+-- Archetype views are always "this deck, in this window", so both columns are needed
+-- for the window to narrow the scan rather than filter after it.
+CREATE INDEX IF NOT EXISTS idx_standing_deck ON standing(deck_id, date DESC) WHERE deck_id IS NOT NULL;
 
 -- Display-name search. Players are found by handle or by any display name they have
 -- ever used, so this is indexed separately from the handle.

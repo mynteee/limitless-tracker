@@ -6,6 +6,10 @@ import { Store } from './db/queries.js';
 import { discover, fetchPending } from './ingest/crawl.js';
 import { build } from './publish/build.js';
 import { serve } from './publish/serve.js';
+import { groupArchetypes } from './publish/archetypes.js';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const USAGE = `
 limitless-tracker
@@ -43,6 +47,15 @@ limitless-tracker
     --all                  every result, not just the most recent event
     --limit <N>            rows to show (default 25)
 
+  decks                  List every archetype, most played first
+    --variants             break each archetype out into its variants
+
+  deck <archetype>       Average decklist and recent placements
+    --days <N>             only decks from the last N days (default 30)
+    --variant <deck_id>    restrict to one variant
+    --results              show placements instead of the average list
+    --limit <N>
+
   reindex                Rebuild the card index from stored decklists
 
   search <term>          Find players by handle or display name
@@ -64,6 +77,10 @@ const args = parseArgs({
         'max-requests': { type: 'string' },
         'no-deepen': { type: 'boolean' },
         all: { type: 'boolean' },
+        variants: { type: 'boolean' },
+        variant: { type: 'string' },
+        days: { type: 'string' },
+        results: { type: 'boolean' },
         'all-events': { type: 'boolean' },
         since: { type: 'string' },
         until: { type: 'string' },
@@ -107,6 +124,8 @@ try {
         case 'serve':   cmdServe(); break;
         case 'lookup':  cmdLookup(rest.join(' ')); break;
         case 'card':    cmdCard(rest.join(' ')); break;
+        case 'decks':   cmdDecks(); break;
+        case 'deck':    cmdDeck(rest.join(' ')); break;
         case 'reindex': cmdReindex(); break;
         case 'search':  cmdSearch(rest.join(' ')); break;
         case 'stats':   cmdStats(); break;
@@ -427,6 +446,115 @@ function cmdLookup(handle) {
     );
 
     console.log(`\nFull decklist:  lookup ${handle} --deck ${history[0].tournamentId}`);
+}
+
+/** Deck ids grouped into base archetypes, with the hand-maintained corrections applied. */
+function archetypes() {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const overrides = JSON.parse(
+        readFileSync(join(here, 'publish', 'data', 'archetype-overrides.json'), 'utf8'),
+    );
+    return groupArchetypes(store.allDecks(), overrides);
+}
+
+function cmdDecks() {
+    const list = archetypes();
+    console.log(`
+${list.length} archetypes across ${list.reduce((a, x) => a + x.decks, 0).toLocaleString()} decklists
+`);
+
+    if (opts.variants) {
+        printTable(
+            ['Archetype', 'Variant', 'Decks'],
+            list.flatMap((a) => a.variants.map((v, i) => [
+                i === 0 ? a.id : '',
+                v.deckId + (v.deckId === a.id ? '' : ''),
+                v.decks.toLocaleString(),
+            ])),
+        );
+        return;
+    }
+
+    printTable(
+        ['Archetype', 'Name', 'Decks', 'Variants', 'Last seen'],
+        list.slice(0, num(opts.limit, 40)).map((a) => [
+            a.id,
+            truncate(a.name, 26),
+            a.decks.toLocaleString(),
+            String(a.variants.length),
+            a.variants.reduce((m, v) => (v.lastSeen > m ? v.lastSeen : m), '').slice(0, 10),
+        ]),
+    );
+    console.log(`
+Detail: deck <archetype>`);
+}
+
+function cmdDeck(term) {
+    if (!term) return fail('Usage: deck <archetype>');
+
+    const list = archetypes();
+    const key = term.toLowerCase();
+    const arch = list.find((a) => a.id === key)
+        ?? list.find((a) => a.name.toLowerCase() === key)
+        ?? list.find((a) => a.id.includes(key) || a.name.toLowerCase().includes(key));
+    if (!arch) return console.log(`No archetype matching "${term}". Try: decks`);
+
+    const variant = opts.variant
+        ? arch.variants.find((v) => v.deckId === opts.variant)
+        : null;
+    if (opts.variant && !variant) {
+        return fail(`"${opts.variant}" is not a variant of ${arch.id}. Have: `
+            + arch.variants.map((v) => v.deckId).join(', '));
+    }
+
+    const deckIds = variant ? [variant.deckId] : arch.variants.map((v) => v.deckId);
+    const days = num(opts.days, 30);
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+
+    console.log(`
+${variant ? variant.deckName : arch.name}  (${variant ? variant.deckId : arch.id})`);
+    if (!variant && arch.variants.length > 1) {
+        console.log(`${arch.variants.length} variants: `
+            + arch.variants.slice(0, 6).map((v) => `${v.deckId} (${v.decks})`).join(', ')
+            + (arch.variants.length > 6 ? ', ...' : ''));
+    }
+
+    if (opts.results) {
+        const rows = store.archetypeResults(deckIds, { since, limit: num(opts.limit, 25) });
+        console.log(`
+Placements, last ${days} days
+`);
+        if (rows.length === 0) return console.log('  none in this window');
+        printTable(
+            ['Place', 'Variant', 'Player', 'Tournament'],
+            rows.map((r) => [
+                r.placing === null ? 'drop' : ordinal(r.placing) + '/' + (r.fieldSize ?? '?'),
+                truncate(r.deckName ?? '—', 20),
+                truncate(r.displayName ?? r.player, 18),
+                truncate(r.tournamentName, 34),
+            ]),
+        );
+        return;
+    }
+
+    const { total, cards } = store.archetypeAverageDecklist(deckIds, { since });
+    if (total === 0) return console.log(`
+No decklists in the last ${days} days.`);
+
+    console.log(`
+Average decklist — ${total.toLocaleString()} decklists, last ${days} days
+`);
+    for (const kind of ['pokemon', 'trainer', 'energy']) {
+        const group = cards.filter((c) => c.kind === kind);
+        if (group.length === 0) continue;
+        const totalAvg = group.reduce((a, c) => a + c.average, 0);
+        console.log(`${kind.toUpperCase()} (${totalAvg.toFixed(1)})`);
+        for (const c of group.slice(0, num(opts.limit, 20))) {
+            console.log(`  ${c.average.toFixed(2).padStart(5)}  ${truncate(c.name, 30).padEnd(30)}`
+                + ` ${(c.setCode + '-' + c.number).padEnd(9)} ${(c.inclusion * 100).toFixed(0)}% of lists`);
+        }
+        console.log();
+    }
 }
 
 function cmdReindex() {

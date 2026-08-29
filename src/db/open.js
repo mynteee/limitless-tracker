@@ -28,10 +28,37 @@ export function openDb(path = DEFAULT_DB_PATH) {
     db.exec('PRAGMA synchronous = NORMAL');
     db.exec('PRAGMA foreign_keys = ON');
 
+    addMissingColumns(db);
     dropStaleDerived(db);
     db.exec(readFileSync(join(here, 'schema.sql'), 'utf8'));
     migrate(db);
     return db;
+}
+
+/**
+ * Add columns to existing tables before the schema runs.
+ *
+ * CREATE TABLE IF NOT EXISTS leaves an existing table alone, so a column added later
+ * never appears — and the schema then fails creating an index that references it.
+ * Unlike the derived card tables these hold crawled data, so they are altered in
+ * place and backfilled rather than dropped.
+ */
+function addMissingColumns(db) {
+    const has = (table, column) =>
+        db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+
+    if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='standing'`).get()) {
+        return;
+    }
+    if (!has('standing', 'date')) {
+        db.exec('ALTER TABLE standing ADD COLUMN date TEXT');
+        db.exec(`
+            UPDATE standing
+            SET date = (SELECT t.date FROM tournament t WHERE t.id = standing.tournament_id)
+        `);
+        // The old single-column index would otherwise shadow the new composite one.
+        db.exec('DROP INDEX IF EXISTS idx_standing_deck');
+    }
 }
 
 /**
