@@ -60,7 +60,74 @@ function deckIcons(deck, cls = '') {
         .join('');
 }
 
+/* ── date ranges ──────────────────────────────────────────────────────────── */
+
+const dayMs = 86_400_000;
+const isoDay = (d) => new Date(d).toISOString().slice(0, 10);
+
+/**
+ * A custom range chosen on a page: either the last N days, or explicit from/to dates.
+ * Both resolve to an inclusive pair of YYYY-MM-DD strings, which is the granularity the
+ * published day buckets hold.
+ */
+function resolveRange(custom) {
+    if (!custom) return null;
+    if (custom.kind === 'days') {
+        const n = Math.max(1, Number(custom.days) || 1);
+        return { from: isoDay(Date.now() - (n - 1) * dayMs), to: isoDay(Date.now()), label: `Last ${n} days` };
+    }
+    const from = custom.from || '0000-01-01';
+    const to = custom.to || isoDay(Date.now());
+    // Accept the ends either way round rather than silently returning nothing.
+    const [a, b] = from <= to ? [from, to] : [to, from];
+    return { from: a, to: b, label: `${a} to ${b}` };
+}
+
+/** The form behind the Custom chip. Shared by the archetype list and archetype pages. */
+function customRangeForm(id, custom) {
+    const c = custom ?? { kind: 'days', days: 14 };
+    return `<form class="range-form" id="${id}">
+        <label><input type="radio" name="${id}-kind" value="days"
+          ${c.kind === 'days' ? 'checked' : ''}> Last
+          <input type="number" name="days" min="1" max="3650" value="${c.kind === 'days' ? c.days : 14}"> days</label>
+        <label><input type="radio" name="${id}-kind" value="range"
+          ${c.kind === 'range' ? 'checked' : ''}> From
+          <input type="date" name="from" value="${c.from ?? ''}"> to
+          <input type="date" name="to" value="${c.to ?? ''}"></label>
+        <button type="submit">Apply</button>
+      </form>`;
+}
+
+/** Read a custom range back out of the form. */
+function readRangeForm(form) {
+    const data = new FormData(form);
+    const kind = data.get(`${form.id}-kind`) ?? 'days';
+    return kind === 'days'
+        ? { kind: 'days', days: Number(data.get('days')) || 14 }
+        : { kind: 'range', from: data.get('from') || '', to: data.get('to') || '' };
+}
+
 /* ── search ───────────────────────────────────────────────────────────────── */
+
+/**
+ * How well an index entry answers what was typed.
+ *
+ * The published buckets are sorted without knowing the search term, so ordering by
+ * relevance has to happen here: an exact name beats a prefix, which beats matching a
+ * word somewhere in the middle.
+ */
+function relevance(entry, term) {
+    const names = [entry.handle, ...(entry.names ?? [entry.name])]
+        .filter(Boolean)
+        .map((n) => String(n).toLowerCase());
+
+    let score = 0;
+    if (names.some((n) => n === term)) score += 100;
+    else if (names.some((n) => n.startsWith(term))) score += 50;
+    else if (names.some((n) => n.split(/[^a-z0-9]+/).includes(term))) score += 25;
+
+    return score;
+}
 
 async function runSearch(term) {
     const t = term.trim().toLowerCase();
@@ -68,15 +135,22 @@ async function runSearch(term) {
         view.innerHTML = `<p class="empty">Type at least two characters.</p>`;
         return;
     }
+    // Players only. Decks and cards each have their own page and their own box: one
+    // index still holds all three, but mixing 133 archetypes and 2,160 card names into
+    // these results buries the person someone actually came to find.
     const bucket = await getJson(`data/search/${shard(t)}.json`);
-    const hits = (bucket ?? []).filter((e) => matchesEntry(e, t)).slice(0, 60);
+    const hits = (bucket ?? [])
+        .filter((e) => !e.type && matchesEntry(e, t))
+        .sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events)
+        .slice(0, 60);
 
     if (hits.length === 0) {
         view.innerHTML = `<p class="empty">No players matching “${esc(term)}”.</p>`;
         return;
     }
 
-    view.innerHTML = `<div class="results">${hits
+    view.innerHTML = `
+      <div class="results">${hits
         .map((e) => {
             // Surface that a player has used other names, so a hit on an outdated one
             // does not look like the wrong person.
@@ -183,6 +257,11 @@ async function toggleDecklist(btn, handle) {
         return;
     }
 
+    showDecklist(box, list);
+}
+
+/** Draw a decklist with its List/Cards toggle. Shared by every page that shows one. */
+function showDecklist(box, list) {
     const draw = (mode) => {
         box.innerHTML = `
           <div class="dl-tools">
@@ -197,6 +276,51 @@ async function toggleDecklist(btn, handle) {
             b.addEventListener('click', () => draw(b.dataset.mode)));
     };
     draw('list');
+}
+
+/**
+ * Expand the decklist behind a result row, in place.
+ *
+ * Rows on the card and archetype pages are about the deck that was played, so opening
+ * one shows that list rather than navigating away to the player who brought it. The
+ * player is still one click further in, from the row's own link.
+ */
+async function toggleRowDecklist(row) {
+    const open = row.nextElementSibling;
+    if (open?.classList.contains('row-decklist')) {
+        open.remove();
+        row.setAttribute('aria-expanded', 'false');
+        return;
+    }
+    // Only one open at a time, or the table turns into a wall of lists.
+    row.parentElement.querySelectorAll('.row-decklist').forEach((el) => el.remove());
+    row.parentElement.querySelectorAll('.crow[aria-expanded="true"]')
+        .forEach((el) => el.setAttribute('aria-expanded', 'false'));
+
+    row.setAttribute('aria-expanded', 'true');
+    row.insertAdjacentHTML('afterend',
+        `<div class="row-decklist"><p class="muted">Loading…</p></div>`);
+    const box = row.nextElementSibling;
+
+    const { handle, tid } = row.dataset;
+    const decks = await getJson(`data/decks/${shard(handle)}/${encodeURIComponent(handle)}.json`);
+    const list = decks?.lists?.[tid];
+    if (!list) {
+        box.innerHTML = `<p class="muted">No decklist published for this entry.</p>`;
+        return;
+    }
+    showDecklist(box, list);
+}
+
+/** Wire every .crow inside a container to expand its decklist. */
+function wireRows(container) {
+    container.querySelectorAll('.crow').forEach((row) => {
+        row.addEventListener('click', (e) => {
+            // The player link inside the row still navigates.
+            if (e.target.closest('a')) return;
+            toggleRowDecklist(row);
+        });
+    });
 }
 
 /**
@@ -236,15 +360,497 @@ function renderCards(list) {
     }).join('');
 }
 
+/* ── card page ────────────────────────────────────────────────────────────── */
+
+/** Rows for one tournament, laid out like Limitless' "Decklists that include this card". */
+function cardResultRows(rows) {
+    return rows.map((r) => `<div class="crow" role="button" tabindex="0" aria-expanded="false"
+        data-handle="${esc(r.handle)}" data-tid="${esc(r.tournamentId)}">
+        <span class="place">${r.placing === null ? '—' : ordinal(r.placing)}${
+            r.fieldSize ? `<span class="of">/${r.fieldSize}</span>` : ''}</span>
+        <span class="deck">${deckIcons(r.deck)}<span>${esc(r.deck?.name ?? 'Other')}</span></span>
+        <a class="who" href="#/p/${encodeURIComponent(r.handle)}">${esc(r.name)}</a>
+        <span class="qty-inline">${r.count}&times;</span>
+      </div>`).join('');
+}
+
+async function renderCard(id) {
+    view.innerHTML = `<p class="empty">Loading…</p>`;
+    const load = (cid) =>
+        getJson(`data/cards/${shard(cid.toLowerCase())}/${encodeURIComponent(cid)}.json`);
+
+    let card = await load(id);
+    // Reprints share one page. Any other printing is published as a stub pointing at it,
+    // so an old link or a typed set code still lands on the card rather than a 404.
+    if (card?.alias) {
+        window.history.replaceState(null, '', `#/c/${encodeURIComponent(card.alias)}`);
+        card = await load(card.alias);
+    }
+    if (!card) {
+        view.innerHTML = `<p class="empty">No card <b>${esc(id)}</b> in this dataset.</p>`;
+        return;
+    }
+
+    // The default view is the newest event on its own, which is how Limitless shows it.
+    const latest = card.results.filter((r) => r.tournamentId === card.latestTournament);
+    const rest = card.results.filter((r) => r.tournamentId !== card.latestTournament);
+
+    const historyRows = rest.map((r, i) => {
+        // Label each event once as the list walks back through them.
+        const header = i === 0 || r.tournamentId !== rest[i - 1].tournamentId
+            ? `<div class="crow sub"><span></span><span class="ev">${esc(r.tournament)}</span>
+               <span class="muted">${esc(r.date)}</span><span></span></div>`
+            : '';
+        return header + cardResultRows([r]);
+    }).join('');
+
+    view.innerHTML = `
+      <div class="card-head">
+        <a class="card-art" href="${esc(cardPage(card.setCode, card.number))}" target="_blank" rel="noopener">
+          <img src="${esc(cardImage(card.setCode, card.number))}" alt="${esc(card.name)}" loading="lazy">
+        </a>
+        <div>
+          <h1>${esc(card.name)}</h1>
+          <p class="muted">${esc(card.setCode)}-${esc(card.number)} · ${esc(card.kind)}</p>
+          <div class="stat-row"><span><b>${card.decks.toLocaleString()}</b> decklists</span></div>
+          ${card.prints?.length > 1 ? `<p class="prints">Also printed as
+            ${card.prints.slice(1).map((p) => `<a href="${esc(cardPage(p.setCode, p.number))}"
+              target="_blank" rel="noopener">${esc(p.id)}</a>`).join(', ')}
+            <span class="muted">— counted together here</span></p>` : ''}
+        </div>
+      </div>
+
+      <h2>Decklists that include this card</h2>
+      <p class="muted">${esc(latest[0]?.tournament ?? '')} · ${esc(latest[0]?.date ?? '')}</p>
+      <div class="ctable">
+        <div class="crow head"><span>Place</span><span>Deck</span><span>Player</span><span>Copies</span></div>
+        ${cardResultRows(latest)}
+      </div>
+
+      ${rest.length ? `<button class="more" id="card-more">Show full history (${rest.length} more)</button>
+      <div class="ctable" id="card-history" hidden>${historyRows}</div>` : ''}
+
+      ${card.decks > card.results.length
+        ? `<p class="muted note">Showing the ${card.results.length} most recent of
+           ${card.decks.toLocaleString()} decklists.</p>` : ''}
+    `;
+
+    wireRows(view);
+
+    const btn = document.getElementById('card-more');
+    if (btn) {
+        btn.addEventListener('click', () => {
+            const box = document.getElementById('card-history');
+            box.hidden = !box.hidden;
+            btn.textContent = box.hidden ? `Show full history (${rest.length} more)` : 'Hide history';
+        });
+    }
+}
+
+/* ── archetype pages ──────────────────────────────────────────────────────── */
+
+/** Shared card dictionary, fetched once: averages reference cards by id alone. */
+let cardDict = null;
+const WINDOW_LABEL = { 30: 'Last 30 days', 90: 'Last 90 days', 0: 'All time' };
+
+/**
+ * Below this many average copies a card is fringe tech, not part of the deck.
+ *
+ * Pooling an archetype's variants turns up every card any of them has ever run: 252
+ * for Dragapult, 153 of which average less than 0.005 and would render as a card
+ * image badged "0.00". Cutting at 0.05 leaves 47, which is about the length of a real
+ * list. The rest stay one click away rather than being dropped.
+ */
+const MIN_AVERAGE = 0.05;
+
+/** The average decklist as card art, with the mean copies as the badge. */
+function renderAverage(cards, showAll = false) {
+    const byKind = { pokemon: [], trainer: [], energy: [] };
+    for (const [id, avg, incl] of cards) {
+        const d = cardDict?.[id];
+        if (!d) continue;
+        (byKind[d[1]] ??= []).push({ id, avg, incl, name: d[0], set: d[2], number: d[3] });
+    }
+
+    let hidden = 0;
+    const html = GROUPS.map(([key, label]) => {
+        const list = byKind[key] ?? [];
+        if (!list.length) return '';
+        // The group total counts every card, including the ones not drawn, so the
+        // three headings still add up to a 60 card deck.
+        const sum = list.reduce((a, c) => a + c.avg, 0);
+        const shown = showAll ? list : list.filter((c) => c.avg >= MIN_AVERAGE);
+        hidden += list.length - shown.length;
+
+        return `<div class="dl-grid-group">
+          <h3>${label} (${sum.toFixed(1)})</h3>
+          <div class="dl-grid">${shown.map((c) => `
+            <a class="dl-card" href="#/c/${encodeURIComponent(c.id)}"
+               title="${c.avg.toFixed(2)} average copies · in ${(c.incl * 100).toFixed(0)}% of lists — ${esc(c.name)}">
+              <img src="${esc(cardImage(c.set, c.number))}" alt="${esc(c.name)}" loading="lazy">
+              <span class="qty avg">${c.avg.toFixed(2)}</span>
+            </a>`).join('')}</div>
+        </div>`;
+    }).join('');
+
+    const toggle = hidden > 0
+        ? `<button class="more" id="fringe">Show ${hidden} fringe card${hidden === 1 ? '' : 's'}</button>`
+        : (showAll ? `<button class="more" id="fringe">Hide fringe cards</button>` : '');
+
+    return html + toggle;
+}
+
+function archetypeResultRows(rows) {
+    return rows.map((r) => `<div class="crow" role="button" tabindex="0" aria-expanded="false"
+        data-handle="${esc(r.handle)}" data-tid="${esc(r.tournamentId)}">
+        <span class="place">${r.placing === null ? '—' : ordinal(r.placing) + '<span class="of">/' + (r.fieldSize ?? '?') + '</span>'}</span>
+        <span class="deck">${deckIcons({ icons: r.icons })}<span>${esc(r.variantName ?? '')}</span></span>
+        <a class="who" href="#/p/${encodeURIComponent(r.handle)}">${esc(r.name)}</a>
+        <span class="ev">${esc(r.tournament)}</span>
+      </div>`).join('');
+}
+
+async function renderArchetype(id, preselectVariant = null) {
+    view.innerHTML = `<p class="empty">Loading…</p>`;
+    const [arch] = await Promise.all([
+        getJson(`data/archetypes/${encodeURIComponent(id)}.json`),
+        cardDict ? Promise.resolve() : getJson('data/cards.json').then((d) => { cardDict = d ?? {}; }),
+    ]);
+    if (!arch) {
+        view.innerHTML = `<p class="empty">No archetype <b>${esc(id)}</b> in this dataset.</p>`;
+        return;
+    }
+
+    // Both selectors only filter data already fetched, so switching is instant.
+    let win = arch.windows.find((w) => String(w) in arch.averages) ?? 0;
+    let variant = arch.variants.some((v) => v.id === preselectVariant) ? preselectVariant : 'all';
+    let showFringe = false;
+    let custom = null;   // set while a custom range is active
+    let daily = null;    // <archetype>.days.json, fetched on first custom use
+
+    /** Aggregate the day buckets into the same shape a precomputed window has. */
+    const customAverage = () => {
+        if (!daily) return null;
+        const { from, to } = resolveRange(custom);
+        const ids = variant === 'all' ? arch.variants.map((v) => v.id) : [variant];
+
+        let total = 0;
+        const merged = new Map();
+        for (const id of ids) {
+            for (const [day, [decks, flat]] of Object.entries(daily.variants[id] ?? {})) {
+                if (day < from || day > to) continue;
+                total += decks;
+                for (let i = 0; i < flat.length; i += 3) {
+                    const cardId = daily.cards[flat[i]];
+                    const cur = merged.get(cardId);
+                    if (cur) { cur.copies += flat[i + 1]; cur.decksWith += flat[i + 2]; }
+                    else merged.set(cardId, { copies: flat[i + 1], decksWith: flat[i + 2] });
+                }
+            }
+        }
+        if (total === 0) return { total: 0, cards: [] };
+        return {
+            total,
+            cards: [...merged.entries()]
+                .map(([cardId, v]) => [cardId, v.copies / total, v.decksWith / total])
+                .sort((a, b) => b[1] - a[1]),
+        };
+    };
+
+    const draw = () => {
+        // Every variant is published with its own average, however small the sample,
+        // so this only falls back when the variant genuinely played nothing in the
+        // window — never because the sample was judged too thin.
+        const forVariant = custom ? customAverage() : arch.averages[win]?.[variant];
+        const avg = custom
+            ? (forVariant?.total ? forVariant : null)
+            : (forVariant ?? (variant === 'all' ? arch.averages[win]?.all ?? null : null));
+        const emptyVariant = variant !== 'all' && !avg;
+        const results = variant === 'all'
+            ? arch.results
+            : arch.results.filter((r) => r.variant === variant);
+
+        const body = document.getElementById('arch-body');
+        body.innerHTML = `
+          <div class="controls">
+            <div class="chips" id="win-chips">
+              ${arch.windows.filter((w) => String(w) in arch.averages).map((w) => `
+                <button class="chip ${!custom && w === win ? 'on' : ''}" data-win="${w}">${WINDOW_LABEL[w] ?? w + 'd'}</button>`).join('')}
+              <button class="chip ${custom ? 'on' : ''}" data-win="custom">Custom…</button>
+            </div>
+            ${custom ? customRangeForm('arch-range', custom) : ''}
+            ${arch.variants.length > 1 ? `<div class="chips" id="var-chips">
+              <button class="chip ${variant === 'all' ? 'on' : ''}" data-var="all">All variants</button>
+              ${arch.variants.map((v) => `
+                <button class="chip ${variant === v.id ? 'on' : ''}" data-var="${esc(v.id)}">
+                  ${deckIcons(v)}<span>${esc(v.name)}</span> <span class="n">${v.decks.toLocaleString()}</span>
+                </button>`).join('')}
+            </div>` : ''}
+          </div>
+
+          <h2>Average decklist</h2>
+          ${avg
+            ? `<p class="muted">${avg.total.toLocaleString()} decklist${avg.total === 1 ? '' : 's'}
+               · ${esc(custom ? resolveRange(custom).label : WINDOW_LABEL[win] ?? win + ' days')}${
+                 avg.total < 20 ? ' · small sample' : ''}</p>
+               ${renderAverage(avg.cards, showFringe)}`
+            : `<p class="empty">${emptyVariant
+                ? 'That variant was not played in this window.'
+                : 'No decklists in this window.'}</p>`}
+
+          <h2>Latest results</h2>
+          ${results.length
+            ? `<div class="ctable">
+                 <div class="crow head"><span>Place</span><span>Variant</span><span>Player</span><span>Tournament</span></div>
+                 ${archetypeResultRows(results)}
+               </div>`
+            : '<p class="empty">No placements for this selection.</p>'}`;
+        wireRows(body);
+
+        document.querySelectorAll('#win-chips .chip').forEach((b) =>
+            b.addEventListener('click', async () => {
+                if (b.dataset.win === 'custom') {
+                    custom = custom ?? { kind: 'days', days: 14 };
+                    // Day buckets ship as a sidecar covering the recent window only, and
+                    // are fetched lazily so the page load never pays for them.
+                    daily ??= await getJson(`data/archetypes/${encodeURIComponent(arch.id)}.days.json`);
+                } else {
+                    custom = null;
+                    win = Number(b.dataset.win);
+                }
+                draw();
+            }));
+        document.getElementById('arch-range')?.addEventListener('submit', (e) => {
+            e.preventDefault();
+            custom = readRangeForm(e.target);
+            draw();
+        });
+        document.querySelectorAll('#var-chips .chip').forEach((b) =>
+            b.addEventListener('click', () => { variant = b.dataset.var; draw(); }));
+        document.getElementById('fringe')?.addEventListener('click', () => {
+            showFringe = !showFringe;
+            draw();
+        });
+    };
+
+    view.innerHTML = `
+      <div class="player-head">
+        <h1>${deckIcons(arch, 'big')}${esc(arch.name)}</h1>
+        <p class="muted">${arch.decks.toLocaleString()} decklists ·
+          ${arch.variants.length} variant${arch.variants.length === 1 ? '' : 's'}</p>
+      </div>
+      <div id="arch-body"></div>`;
+    draw();
+}
+
+/**
+ * Card search, on its own page with its own box.
+ *
+ * Reads the same published buckets as the main search, filtered to cards, so nothing
+ * extra is published for it.
+ */
+async function renderCardSearch(initial = '') {
+    view.innerHTML = `
+      <h1 class="page-title">Cards</h1>
+      <p class="muted">Search any card to see the decklists that ran it.</p>
+      <form id="card-form" class="inline-search" role="search">
+        <input id="cq" type="search" placeholder="Card name or set code, e.g. MEG-114…"
+               aria-label="Search cards" spellcheck="false" value="${esc(initial)}">
+      </form>
+      <div id="card-results"></div>`;
+
+    const box = document.getElementById('card-results');
+    const cq = document.getElementById('cq');
+
+    const run = async (term) => {
+        const t = term.trim().toLowerCase();
+        if (t.length < 2) {
+            box.innerHTML = `<p class="empty">Type at least two characters.</p>`;
+            return;
+        }
+        const bucket = await getJson(`data/search/${shard(t)}.json`);
+        const hits = (bucket ?? [])
+            .filter((e) => e.type === 'card' && matchesEntry(e, t))
+            .sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events)
+            .slice(0, 80);
+
+        box.innerHTML = hits.length === 0
+            ? `<p class="empty">No cards matching “${esc(term)}”.</p>`
+            : `<div class="results">${hits.map((e) => `
+                <a class="result" href="#/c/${encodeURIComponent(e.handle)}">
+                  <img class="mini-card" src="${esc(cardImage(...e.handle.split('-')))}" alt="" loading="lazy">
+                  <span class="name">${esc(e.name)}</span>
+                  <span class="handle">${esc(e.handle)}</span>
+                  <span class="spacer"></span>
+                  <span class="count">${e.events.toLocaleString()} decklists</span>
+                </a>`).join('')}</div>`;
+    };
+
+    document.getElementById('card-form').addEventListener('submit', (e) => e.preventDefault());
+    let t;
+    cq.addEventListener('input', () => {
+        clearTimeout(t);
+        t = setTimeout(() => run(cq.value), 120);
+    });
+    if (initial) run(initial); else cq.focus();
+}
+
+async function renderArchetypeList() {
+    view.innerHTML = `<p class="empty">Loading…</p>`;
+    const list = await getJson('data/archetypes.json');
+    if (!list) { view.innerHTML = `<p class="empty">No archetype data.</p>`; return; }
+
+    // Every control filters data already fetched — one small file holds the whole list
+    // with its variants and per-window counts, so switching is instant.
+    let win = 0;
+    let split = false;
+    let custom = null;       // set while the Custom window is active
+    let dailyCounts = null;  // archetypes-days.json, fetched on first custom use
+
+    view.innerHTML = `
+      <h1 class="page-title">Archetypes</h1>
+      <div class="controls">
+        <div class="chips" id="adeck-win"></div>
+        <div class="chips"><button class="chip" id="adeck-split">Split variants</button></div>
+      </div>
+      <div id="adeck-range"></div>
+      <form id="deck-form" class="inline-search" role="search">
+        <input id="dq" type="search" placeholder="Filter archetypes…"
+               aria-label="Filter archetypes" spellcheck="false">
+      </form>
+      <p class="muted" id="adeck-count"></p>
+      <div id="deck-results"></div>`;
+
+    const box = document.getElementById('deck-results');
+    const dq = document.getElementById('dq');
+    const winBox = document.getElementById('adeck-win');
+    const splitBtn = document.getElementById('adeck-split');
+
+    const range = () => resolveRange(custom);
+
+    /** Decklists for an entry, either from a precomputed window or a custom range. */
+    const countIn = (entry) => {
+        if (!custom) return entry.windows?.[win] ?? (win === 0 ? entry.decks : 0);
+        if (!dailyCounts) return 0;
+        const { from, to } = range();
+        const ids = entry.variants?.length ? entry.variants.map((v) => v.id) : [entry.id];
+        let n = 0;
+        for (const id of ids) {
+            for (const [day, c] of Object.entries(dailyCounts.decks[id] ?? {})) {
+                if (day >= from && day <= to) n += c;
+            }
+        }
+        return n;
+    };
+
+    const row = (e, href, sub) => `
+      <a class="result" href="#/d/${href}">
+        <span class="ico">${deckIcons(e)}</span>
+        <span class="name${sub ? ' sub' : ''}">${esc(e.name)}</span>
+        ${!sub && e.variants.length > 1 ? `<span class="alias">${e.variants.length} variants</span>` : ''}
+        <span class="spacer"></span>
+        <span class="count">${countIn(e).toLocaleString()} decks${
+          e.lastSeen ? ` · last ${esc(e.lastSeen)}` : ''}</span>
+      </a>`;
+
+    const draw = () => {
+        winBox.innerHTML = [[0, 'All time'], [90, 'Last 90 days'], [30, 'Last 30 days']]
+            .map(([w, label]) => `<button class="chip ${!custom && w === win ? 'on' : ''}" data-win="${w}">${label}</button>`)
+            .join('') + `<button class="chip ${custom ? 'on' : ''}" data-win="custom">Custom…</button>`;
+        splitBtn.classList.toggle('on', split);
+        document.getElementById('adeck-range').innerHTML =
+            custom ? customRangeForm('adeck-form', custom) : '';
+
+        const t = dq.value.trim().toLowerCase();
+        const matches = (e) => !t || e.id.includes(t) || e.name.toLowerCase().includes(t);
+
+        let rows;
+        let shown;
+        if (split) {
+            // Flattened to one row per variant, ranked across archetypes rather than
+            // nested, so the window ordering still means something.
+            const flat = list.flatMap((a) => a.variants
+                .filter((v) => matches(a) || matches(v))
+                .map((v) => ({ ...v, parent: a })));
+            const live = flat.filter((v) => countIn(v) > 0).sort((a, b) => countIn(b) - countIn(a));
+            shown = live.length;
+            rows = live.map((v) => row(
+                { ...v, variants: [] },
+                // Pages are keyed by base archetype, so a variant links to its parent
+                // with itself preselected rather than to an id that has no page. Each
+                // segment is encoded on its own — encoding the pair would escape the
+                // separator to %2F and the route could never split it apart again.
+                `${encodeURIComponent(v.parent.id)}/${encodeURIComponent(v.id)}`,
+                true,
+            )).join('');
+        } else {
+            const live = list.filter((a) => matches(a) && countIn(a) > 0)
+                .sort((a, b) => countIn(b) - countIn(a));
+            shown = live.length;
+            rows = live.map((a) => row(a, encodeURIComponent(a.id), false)).join('');
+        }
+
+        document.getElementById('adeck-count').textContent =
+            `${shown} ${split ? 'variants' : 'archetypes'}` +
+            (custom ? ` · ${range().label}` : win ? ` played in the last ${win} days` : ' all time');
+        box.innerHTML = shown === 0
+            ? `<p class="empty">Nothing matching that.</p>`
+            : `<div class="results">${rows}</div>`;
+    };
+
+    document.getElementById('deck-form').addEventListener('submit', (e) => e.preventDefault());
+    dq.addEventListener('input', draw);
+    winBox.addEventListener('click', async (e) => {
+        const b = e.target.closest('[data-win]');
+        if (!b) return;
+        if (b.dataset.win === 'custom') {
+            custom = custom ?? { kind: 'days', days: 14 };
+            // Day buckets only ship for the recent window, so this is fetched lazily
+            // and only by people who actually use a custom range.
+            dailyCounts ??= await getJson('data/archetypes-days.json');
+        } else {
+            custom = null;
+            win = Number(b.dataset.win);
+        }
+        draw();
+    });
+
+    document.getElementById('adeck-range').addEventListener('submit', (e) => {
+        e.preventDefault();
+        custom = readRangeForm(e.target);
+        draw();
+    });
+    splitBtn.addEventListener('click', () => { split = !split; draw(); });
+
+    draw();
+    dq.focus();
+}
+
 /* ── routing ──────────────────────────────────────────────────────────────── */
 
 function route() {
     const hash = location.hash.slice(1);
-    const m = hash.match(/^\/p\/(.+)$/);
-    if (m) {
-        const handle = decodeURIComponent(m[1]);
+    const player = hash.match(/^\/p\/(.+)$/);
+    const card = hash.match(/^\/c\/(.+)$/);
+    const deck = hash.match(/^\/d\/(.+)$/);
+    const cardSearch = hash === '/cards';
+    if (player) {
         input.value = '';
-        renderPlayer(handle);
+        renderPlayer(decodeURIComponent(player[1]));
+    } else if (card) {
+        input.value = '';
+        renderCard(decodeURIComponent(card[1]));
+    } else if (deck) {
+        input.value = '';
+        // #/d/<archetype> or #/d/<archetype>/<variant>
+        const [base, chosen] = deck[1].split('/').map(decodeURIComponent);
+        renderArchetype(base, chosen ?? null);
+    } else if (hash === '/decks') {
+        input.value = '';
+        renderArchetypeList();
+    } else if (cardSearch) {
+        input.value = '';
+        renderCardSearch();
     } else if (input.value.trim()) {
         runSearch(input.value);
     } else {
@@ -261,7 +867,11 @@ function renderHome() {
         <span><b>${c.players.toLocaleString()}</b> players</span>
         <span><b>${c.tournaments.toLocaleString()}</b> tournaments</span>
         <span><b>${c.decklists.toLocaleString()}</b> decklists</span>
+        ${c.archetypes ? `<span><b>${c.archetypes.toLocaleString()}</b> archetypes</span>` : ''}
+        ${c.cards ? `<span><b>${c.cards.toLocaleString()}</b> cards</span>` : ''}
       </div>` : ''}
+      <p class="browse"><a href="#/decks">Browse all archetypes →</a>
+        <a href="#/cards">Search cards →</a></p>
     </div>`;
 }
 

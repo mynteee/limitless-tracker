@@ -28,9 +28,59 @@ export function openDb(path = DEFAULT_DB_PATH) {
     db.exec('PRAGMA synchronous = NORMAL');
     db.exec('PRAGMA foreign_keys = ON');
 
+    addMissingColumns(db);
+    dropStaleDerived(db);
     db.exec(readFileSync(join(here, 'schema.sql'), 'utf8'));
     migrate(db);
     return db;
+}
+
+/**
+ * Add columns to existing tables before the schema runs.
+ *
+ * CREATE TABLE IF NOT EXISTS leaves an existing table alone, so a column added later
+ * never appears — and the schema then fails creating an index that references it.
+ * Unlike the derived card tables these hold crawled data, so they are altered in
+ * place and backfilled rather than dropped.
+ */
+function addMissingColumns(db) {
+    const has = (table, column) =>
+        db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+
+    if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='standing'`).get()) {
+        return;
+    }
+    if (!has('standing', 'date')) {
+        db.exec('ALTER TABLE standing ADD COLUMN date TEXT');
+        db.exec(`
+            UPDATE standing
+            SET date = (SELECT t.date FROM tournament t WHERE t.id = standing.tournament_id)
+        `);
+        // The old single-column index would otherwise shadow the new composite one.
+        db.exec('DROP INDEX IF EXISTS idx_standing_deck');
+    }
+}
+
+/**
+ * Drop derived tables whose shape no longer matches the schema, before it is applied.
+ *
+ * CREATE TABLE IF NOT EXISTS will not alter a table that already exists, so a new
+ * column on a derived table would leave the old shape in place and then fail on the
+ * index that references the missing column. These tables hold nothing that cannot be
+ * rebuilt from `standing` by `reindex`, so dropping is always safe — unlike the
+ * crawled data, which is migrated in place.
+ */
+function dropStaleDerived(db) {
+    const exists = db.prepare(
+        `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'card_play'`,
+    ).get();
+    if (!exists) return;
+
+    const columns = new Set(db.prepare(`PRAGMA table_info(card_play)`).all().map((c) => c.name));
+    if (!columns.has('date')) {
+        db.exec('DROP TABLE card_play');
+        db.exec('DROP TABLE IF EXISTS card');
+    }
 }
 
 /**

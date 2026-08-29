@@ -297,3 +297,202 @@ main { max-width: 60rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
   .event-row .record { display: none; }
   .event-row .tname { grid-column: 1 / -1; font-size: .85rem; color: var(--muted); }
 }
+
+/* ── card page ────────────────────────────────────────────────────────────── */
+
+.card-head {
+    display: flex;
+    gap: 1.25rem;
+    align-items: flex-start;
+    margin-bottom: 1.5rem;
+}
+
+.card-head h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
+
+.card-art img {
+    width: 150px;
+    border-radius: 8px;
+    display: block;
+    box-shadow: 0 2px 10px rgb(0 0 0 / .28);
+}
+
+.page-title { font-size: 1.5rem; margin: 0 0 .25rem; }
+
+/* Result tables shared by the card and archetype pages. */
+.ctable { margin: .5rem 0 1.5rem; }
+
+.crow {
+    display: grid;
+    grid-template-columns: 5.5rem minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.2fr);
+    gap: .75rem;
+    align-items: center;
+    padding: .45rem .6rem;
+    border-radius: 6px;
+    color: inherit;
+    text-decoration: none;
+    font-size: .9rem;
+}
+
+a.crow:hover { background: var(--accent-soft); }
+
+.crow > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.crow.head {
+    font-size: .75rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+}
+
+/* Event separator inside the expanded history. */
+.crow.sub {
+    border-top: 1px solid var(--line);
+    margin-top: .4rem;
+    padding-top: .6rem;
+    border-radius: 0;
+}
+
+.crow.sub .ev { font-weight: 600; }
+
+.crow .place { font-variant-numeric: tabular-nums; color: var(--muted); }
+.crow .deck { display: flex; align-items: center; gap: .3rem; min-width: 0; }
+.crow .deck > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crow .qty-inline { font-variant-numeric: tabular-nums; color: var(--muted); }
+.crow .ev { color: var(--muted); }
+
+.more {
+    font: inherit;
+    font-size: .875rem;
+    padding: .45rem .9rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    margin-bottom: 1rem;
+}
+
+.more:hover { background: var(--accent-soft); }
+
+.note { font-size: .8125rem; }
+
+/* ── archetype controls ───────────────────────────────────────────────────── */
+
+.controls {
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+    margin: 1rem 0 1.5rem;
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    font: inherit;
+    font-size: .8125rem;
+    padding: .3rem .6rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+.chip:hover { background: var(--accent-soft); }
+
+.chip.on {
+    background: var(--accent, #2f6feb);
+    border-color: transparent;
+    color: #fff;
+}
+
+.chip .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.chip.on .n { color: rgb(255 255 255 / .75); }
+
+/* The average is a fraction, so it needs more room than a plain 1-4 count. */
+.qty.avg {
+    min-width: 2.4rem;
+    font-size: .7rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.result .tag {
+    font-size: .625rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    padding: .1rem .35rem;
+    border-radius: 3px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+}
+
+.result .ico { display: inline-flex; align-items: center; }
+
+.browse { margin: 1rem 0 0; }
+
+@media (max-width: 640px) {
+    .crow { grid-template-columns: 4rem minmax(0, 1fr) minmax(0, 1fr); font-size: .8125rem; }
+    .crow > :nth-child(4) { display: none; }
+    .card-head { flex-direction: column; }
+    .card-art img { width: 120px; }
+}
+
+/* Result-kind filter above search results. */
+.search-tabs { margin-bottom: .75rem; }
+.search-tabs .chip[disabled] { opacity: .4; cursor: default; }
+.search-tabs .chip[disabled]:hover { background: transparent; }
+
+/* Field size beside a placement. */
+.crow .of { opacity: .55; font-weight: 400; }
+
+/* Expandable result rows: the row itself opens the list, the player name still links. */
+.crow[role="button"] { cursor: pointer; }
+.crow[role="button"]:hover { background: var(--hover, rgba(127,127,127,.08)); }
+.crow[aria-expanded="true"] { background: var(--hover, rgba(127,127,127,.12)); }
+.crow a.who { color: inherit; text-decoration: none; }
+.crow a.who:hover { text-decoration: underline; }
+.row-decklist { padding: .75rem 1rem 1rem; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); }
+
+/* Card search page. */
+.inline-search { margin: .75rem 0 1rem; }
+.inline-search input {
+  width: 100%; padding: .6rem .8rem; font: inherit;
+  border: 1px solid var(--line, rgba(127,127,127,.35)); border-radius: 8px;
+  background: transparent; color: inherit;
+}
+.mini-card { width: 30px; height: 42px; object-fit: cover; border-radius: 3px; flex: none; }
+.browse a + a { margin-left: 1.25rem; }
+
+/* Other printings of the same card. */
+.prints { font-size: .875rem; margin: .4rem 0 0; }
+.prints a { color: inherit; }
+
+/* Variant rows in the split view sit visually under their archetype. */
+.result .name.sub { opacity: .92; }
+
+/* Custom date-range form behind the Custom… chip. */
+.range-form {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem;
+  margin: .6rem 0 .2rem; font-size: .875rem;
+}
+.range-form label { display: flex; align-items: center; gap: .35rem; }
+.range-form input[type="number"] { width: 4.5rem; }
+.range-form input[type="number"], .range-form input[type="date"] {
+  padding: .25rem .4rem; font: inherit; font-size: .875rem; color: inherit;
+  background: transparent; border: 1px solid var(--line, rgba(127,127,127,.35));
+  border-radius: 5px;
+}
+.range-form button {
+  padding: .3rem .7rem; font: inherit; font-size: .875rem; cursor: pointer;
+  color: inherit; background: transparent;
+  border: 1px solid var(--line, rgba(127,127,127,.35)); border-radius: 5px;
+}

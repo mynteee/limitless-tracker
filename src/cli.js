@@ -4,8 +4,13 @@ import { LimitlessApi } from './api/limitless.js';
 import { openDb, DEFAULT_DB_PATH } from './db/open.js';
 import { Store } from './db/queries.js';
 import { discover, fetchPending } from './ingest/crawl.js';
+import { fetchPrintGroups } from './ingest/prints.js';
 import { build } from './publish/build.js';
 import { serve } from './publish/serve.js';
+import { groupArchetypes } from './publish/archetypes.js';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const USAGE = `
 limitless-tracker
@@ -15,7 +20,7 @@ limitless-tracker
     --format <ID>        default STANDARD
     --pages <N>          max listing pages to discover (50 tournaments each)
     --limit <N>          max tournaments to ingest this run
-    --min-players <N>    skip events smaller than this (default 50, 0 disables)
+    --min-players <N>    skip events smaller than this (default 16, 0 disables)
     --since <date>       only tournaments on or after this date (YYYY-MM-DD)
     --until <date>       only tournaments on or before this date
     --all-events         keep events that ran without decklists (off by default)
@@ -39,6 +44,25 @@ limitless-tracker
     --deck <tournamentId>  print the full decklist from that event
     --json
 
+  card <name|SET-NUM>    Which decklists ran a card, newest event first
+    --all                  every result, not just the most recent event
+    --limit <N>            rows to show (default 25)
+
+  decks                  List every archetype, most played first
+    --variants             break each archetype out into its variants
+
+  deck <archetype>       Average decklist and recent placements
+    --days <N>             only decks from the last N days (default 30)
+    --variant <deck_id>    restrict to one variant
+    --results              show placements instead of the average list
+    --limit <N>
+
+  prints                 Work out which card printings are the same card
+    --limit <N>            look up at most N cards this run
+    --max-minutes <N>
+
+  reindex                Rebuild the card index from stored decklists
+
   search <term>          Find players by handle or display name
   stats                  What the local database currently holds
 
@@ -57,6 +81,11 @@ const args = parseArgs({
         'max-minutes': { type: 'string' },
         'max-requests': { type: 'string' },
         'no-deepen': { type: 'boolean' },
+        all: { type: 'boolean' },
+        variants: { type: 'boolean' },
+        variant: { type: 'string' },
+        days: { type: 'string' },
+        results: { type: 'boolean' },
         'all-events': { type: 'boolean' },
         since: { type: 'string' },
         until: { type: 'string' },
@@ -99,6 +128,11 @@ try {
         case 'build':   cmdBuild(); break;
         case 'serve':   cmdServe(); break;
         case 'lookup':  cmdLookup(rest.join(' ')); break;
+        case 'card':    cmdCard(rest.join(' ')); break;
+        case 'decks':   cmdDecks(); break;
+        case 'deck':    cmdDeck(rest.join(' ')); break;
+        case 'prints':  await cmdPrints(); break;
+        case 'reindex': cmdReindex(); break;
         case 'search':  cmdSearch(rest.join(' ')); break;
         case 'stats':   cmdStats(); break;
         default:
@@ -243,8 +277,14 @@ function report(api) {
  * and small events are mostly noise, so the default is deliberately selective.
  * `--min-players 0` turns the size filter off.
  */
+/**
+ * Minimum event size to keep. Must stay in step with the crawl workflow's default,
+ * or a local run and CI build different corpora from the same repo — and `prune`,
+ * which reads this same value, would then offer to delete everything CI collected
+ * between the two thresholds.
+ */
 function policyMinPlayers() {
-    if (opts['min-players'] === undefined) return 50;
+    if (opts['min-players'] === undefined) return 16;
     const n = Number(opts['min-players']);
     return Number.isFinite(n) && n > 0 ? n : null;
 }
@@ -322,15 +362,19 @@ function cmdBuild() {
         decklistMonths,
         onProgress: (p) => {
             if (p.type === 'unsafe') console.warn(`  skipped unsafe handle: ${JSON.stringify(p.handle)}`);
-            else console.log(`  ${p.written}/${p.total} players`);
+            else if (p.type === 'window') console.log(`  averaged ${p.decks} decks over the ${p.days || 'all-time'} window`);
+            else console.log(`  ${p.written}/${p.total} ${p.type}`);
         },
     });
 
     console.log();
-    console.log(`${r.players} player files, ${r.listsWritten} decklists, ${r.searchBuckets} search buckets`);
-    console.log(`  players/  ${mb(r.bytes.players)}`);
-    console.log(`  decks/    ${mb(r.bytes.decks)}`);
-    console.log(`  search/   ${mb(r.bytes.search)}`);
+    console.log(`${r.players} players, ${r.cards} cards, ${r.archetypes} archetypes, `
+        + `${r.listsWritten} decklists, ${r.searchBuckets} search buckets`);
+    console.log(`  players/     ${mb(r.bytes.players)}`);
+    console.log(`  decks/       ${mb(r.bytes.decks)}`);
+    console.log(`  cards/       ${mb(r.bytes.cards)}`);
+    console.log(`  archetypes/  ${mb(r.bytes.archetypes)}`);
+    console.log(`  search/      ${mb(r.bytes.search)}`);
     console.log(`  total     ${mb(r.bytes.total)}`);
     console.log();
     console.log(`Coverage ${r.meta.coverage.from?.slice(0, 10)} to ${r.meta.coverage.to?.slice(0, 10)}`
@@ -418,6 +462,223 @@ function cmdLookup(handle) {
     );
 
     console.log(`\nFull decklist:  lookup ${handle} --deck ${history[0].tournamentId}`);
+}
+
+/** Deck ids grouped into base archetypes, with the hand-maintained corrections applied. */
+function archetypes() {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const overrides = JSON.parse(
+        readFileSync(join(here, 'publish', 'data', 'archetype-overrides.json'), 'utf8'),
+    );
+    return groupArchetypes(store.allDecks(), overrides);
+}
+
+function cmdDecks() {
+    const list = archetypes();
+    console.log(`
+${list.length} archetypes across ${list.reduce((a, x) => a + x.decks, 0).toLocaleString()} decklists
+`);
+
+    if (opts.variants) {
+        printTable(
+            ['Archetype', 'Variant', 'Decks'],
+            list.flatMap((a) => a.variants.map((v, i) => [
+                i === 0 ? a.id : '',
+                v.deckId + (v.deckId === a.id ? '' : ''),
+                v.decks.toLocaleString(),
+            ])),
+        );
+        return;
+    }
+
+    printTable(
+        ['Archetype', 'Name', 'Decks', 'Variants', 'Last seen'],
+        list.slice(0, num(opts.limit, 40)).map((a) => [
+            a.id,
+            truncate(a.name, 26),
+            a.decks.toLocaleString(),
+            String(a.variants.length),
+            a.variants.reduce((m, v) => (v.lastSeen > m ? v.lastSeen : m), '').slice(0, 10),
+        ]),
+    );
+    console.log(`
+Detail: deck <archetype>`);
+}
+
+function cmdDeck(term) {
+    if (!term) return fail('Usage: deck <archetype>');
+
+    const list = archetypes();
+    const key = term.toLowerCase();
+    const arch = list.find((a) => a.id === key)
+        ?? list.find((a) => a.name.toLowerCase() === key)
+        ?? list.find((a) => a.id.includes(key) || a.name.toLowerCase().includes(key));
+    if (!arch) return console.log(`No archetype matching "${term}". Try: decks`);
+
+    const variant = opts.variant
+        ? arch.variants.find((v) => v.deckId === opts.variant)
+        : null;
+    if (opts.variant && !variant) {
+        return fail(`"${opts.variant}" is not a variant of ${arch.id}. Have: `
+            + arch.variants.map((v) => v.deckId).join(', '));
+    }
+
+    const deckIds = variant ? [variant.deckId] : arch.variants.map((v) => v.deckId);
+    const days = num(opts.days, 30);
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+
+    console.log(`
+${variant ? variant.deckName : arch.name}  (${variant ? variant.deckId : arch.id})`);
+    if (!variant && arch.variants.length > 1) {
+        console.log(`${arch.variants.length} variants: `
+            + arch.variants.slice(0, 6).map((v) => `${v.deckId} (${v.decks})`).join(', ')
+            + (arch.variants.length > 6 ? ', ...' : ''));
+    }
+
+    if (opts.results) {
+        const rows = store.archetypeResults(deckIds, { since, limit: num(opts.limit, 25) });
+        console.log(`
+Placements, last ${days} days
+`);
+        if (rows.length === 0) return console.log('  none in this window');
+        printTable(
+            ['Place', 'Variant', 'Player', 'Tournament'],
+            rows.map((r) => [
+                r.placing === null ? 'drop' : ordinal(r.placing) + '/' + (r.fieldSize ?? '?'),
+                truncate(r.deckName ?? '—', 20),
+                truncate(r.displayName ?? r.player, 18),
+                truncate(r.tournamentName, 34),
+            ]),
+        );
+        return;
+    }
+
+    const { total, cards } = store.archetypeAverageDecklist(deckIds, { since });
+    if (total === 0) return console.log(`
+No decklists in the last ${days} days.`);
+
+    console.log(`
+Average decklist — ${total.toLocaleString()} decklists, last ${days} days
+`);
+    for (const kind of ['pokemon', 'trainer', 'energy']) {
+        const group = cards.filter((c) => c.kind === kind);
+        if (group.length === 0) continue;
+        const totalAvg = group.reduce((a, c) => a + c.average, 0);
+        console.log(`${kind.toUpperCase()} (${totalAvg.toFixed(1)})`);
+        for (const c of group.slice(0, num(opts.limit, 20))) {
+            console.log(`  ${c.average.toFixed(2).padStart(5)}  ${truncate(c.name, 30).padEnd(30)}`
+                + ` ${(c.setCode + '-' + c.number).padEnd(9)} ${(c.inclusion * 100).toFixed(0)}% of lists`);
+        }
+        console.log();
+    }
+}
+
+async function cmdPrints() {
+    const before = store.printStats();
+    const todo = store.cardsWithoutPrints(-1).length;
+    if (todo === 0) {
+        console.log(`All ${before.cards.toLocaleString()} cards resolved into `
+            + `${before.groups.toLocaleString()} distinct cards.`);
+        return;
+    }
+
+    const deadline = opts['max-minutes']
+        ? Date.now() + Number(opts['max-minutes']) * 60_000
+        : Infinity;
+
+    console.log(`Looking up print groups for ${todo.toLocaleString()} cards on limitlesstcg.com`);
+    console.log('Cached permanently — only cards never looked up are fetched.\n');
+
+    const controller = new AbortController();
+    process.on('SIGINT', () => {
+        console.log('\n\nStopping — progress is saved, re-run to continue.');
+        controller.abort();
+    });
+
+    const r = await fetchPrintGroups(store, {
+        limit: num(opts.limit, Infinity),
+        deadline,
+        signal: controller.signal,
+        onProgress: ({ done, total, card, prints }) => {
+            const line = `  [${String(done).padStart(5)}/${total}] ${card.padEnd(10)} ${prints} print${prints === 1 ? '' : 's'}`;
+            if (process.stdout.isTTY) process.stdout.write(`\r${line.padEnd(70)}`);
+            else console.log(line);
+        },
+    });
+    if (process.stdout.isTTY) process.stdout.write('\n');
+
+    const after = store.printStats();
+    console.log(`\nLooked up ${r.done}${r.failed ? ` (${r.failed} unreadable)` : ''}.`);
+    console.log(`${after.looked_up.toLocaleString()} of ${after.cards.toLocaleString()} `
+        + `printings resolved, into ${after.groups.toLocaleString()} distinct cards.`);
+    const left = store.cardsWithoutPrints(-1).length;
+    if (left) console.log(`${left.toLocaleString()} still to look up — re-run to continue.`);
+}
+
+function cmdReindex() {
+    const t = Date.now();
+    process.stdout.write('Rebuilding the card index from stored decklists... ');
+    store.reindexCards();
+    const s = store.cardIndexStats();
+    console.log(`done in ${humanDuration(Date.now() - t)}`);
+    console.log(`${s.cards.toLocaleString()} distinct cards, ${s.plays.toLocaleString()} card-in-deck rows`);
+}
+
+function cmdCard(term) {
+    if (!term) return fail('Usage: card <name or SET-NUM>');
+
+    // Accept an exact id, otherwise search by name and take the most-played match.
+    let card = /^[A-Za-z0-9]+-[A-Za-z0-9]+$/.test(term) ? store.getCard(term) : null;
+    if (!card) {
+        const hits = store.searchCards(term, 10);
+        if (hits.length === 0) return console.log(`No card matching "${term}".`);
+        if (hits.length > 1 && hits[0].name.toLowerCase() !== term.toLowerCase()) {
+            console.log(`
+Several cards match "${term}":
+`);
+            printTable(
+                ['Card', 'Name', 'Kind', 'Decks'],
+                hits.map((h) => [h.id, truncate(h.name, 34), h.kind, h.decks.toLocaleString()]),
+            );
+            console.log(`
+Pick one: card ${hits[0].id}`);
+            return;
+        }
+        card = hits[0];
+    }
+
+    const limit = num(opts.limit, 25);
+    // Default view is the most recent event only, which is what the card page shows;
+    // --all walks back through everything the index holds.
+    const shown = opts.all
+        ? store.getCardResults(card.id, { limit })
+        : store.getCardLatestEvent(card.id);
+    if (shown.length === 0) return console.log(`No decklists recorded for ${card.id}.`);
+
+    console.log(`
+${card.name}  (${card.setCode}-${card.number}, ${card.kind})`);
+    console.log(`in ${card.decks.toLocaleString()} decklists`);
+    console.log(opts.all
+        ? `
+Latest ${Math.min(shown.length, limit)} results`
+        : `
+Decklists that include this card — ${shown[0].tournamentName}`);
+    console.log();
+
+    printTable(
+        ['Place', 'Deck', 'Player', 'Copies'].concat(opts.all ? ['Tournament'] : []),
+        shown.slice(0, limit).map((r) => [
+            r.placing === null ? 'drop' : ordinal(r.placing),
+            truncate(r.deckName ?? '—', 22),
+            truncate(r.displayName ?? r.player, 20),
+            String(r.count),
+        ].concat(opts.all ? [truncate(r.tournamentName, 34)] : [])),
+    );
+
+    if (!opts.all && card.decks > shown.length) {
+        console.log(`
+${(card.decks - shown.length).toLocaleString()} more across earlier events: card ${card.id} --all`);
+    }
 }
 
 function cmdSearch(term) {

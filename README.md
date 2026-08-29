@@ -12,15 +12,25 @@ time, and each decklist rendered the way Limitless renders it.
 ## Using the site
 
 The published site is static and answers everything from pre-built data, so it stays fast
-no matter how many people use it. Search by:
+no matter how many people use it. Each kind of thing has its own box: the top bar searches
+**players**, `#/decks` filters the archetype list, and `#/cards` searches cards. They are
+kept apart so 133 archetypes and 2,160 card names cannot bury the person you came to find.
 
-- **handle** — `awsomeguy1975`
-- **display name** — `Mark Miller`
-- **an old display name** — players rename themselves often, and searching a name someone
-  used months ago still finds them under their current one
+**Players** — search by handle (`awsomeguy1975`), display name (`Mark Miller`), or a name
+someone used months ago; renames never hide a player. Click any event to expand the
+decklist: **List** shows it in Limitless' own format, **Cards** shows the actual card art.
 
-Click any event to expand the decklist. **List** shows it in Limitless' own format;
-**Cards** shows the actual card images.
+**Decks** — every archetype is at `#/decks`, with a filter box, a date window, and a
+**Split variants** toggle that flattens the list to one row per variant ranked across all
+archetypes. An archetype page shows the average decklist as card art badged with the mean
+number of copies, plus its recent placements. Both scope to the last 30 days, 90 days or
+all time, or a **Custom…** range given either as "last N days" or as explicit from/to
+dates. Every variant has its own average however few decks it has, with the sample size
+shown rather than being silently replaced.
+
+**Cards** — search them at `#/cards`. A card page lists the decklists that ran it, newest
+event first and sorted by placing, with the rest of its history behind a toggle. Clicking
+a row opens that decklist in place. Reprints share one page — see [Reprints](#reprints).
 
 ---
 
@@ -110,9 +120,13 @@ Useful limits:
 | `--full` | re-walk the whole archive from the front, ignoring the cursor |
 
 A full year takes roughly **3 hours** of crawling, and is safe to do in chunks across
-several sessions. The archive itself goes back to August 2021 — about 251 listing pages,
-or 12,600 tournaments — and once a crawl reaches the end it records that and stops
-extending, since nothing is ever added to the old end.
+several sessions.
+
+**Nothing before 1 January 2020 is ever fetched.** Limitless keeps adding history at the
+old end, so an unbounded backfill has no natural stopping point; the floor gives it one,
+and a repeated `crawl` eventually finishes rather than running forever. A tighter
+`--since` still applies on top of it. Once a crawl reaches the floor it records that and
+stops extending, since nothing below it will ever appear.
 
 ---
 
@@ -139,6 +153,11 @@ node src/cli.js <command>
 | `crawl` | Fetch new tournaments. Resumable and rate-limited. |
 | `lookup <player>` | A player's full history in the terminal. |
 | `search <term>` | Find a player by handle or any display name. |
+| `card <name\|SET-NUM>` | Which decklists ran a card, newest event first. `--all` for earlier events. |
+| `decks` | List every archetype, most played first. `--variants` to break them out. |
+| `deck <archetype>` | Average decklist, or `--results` for placements. `--days`, `--variant`. |
+| `prints` | Work out which printings are the same card. Cached; run once. |
+| `reindex` | Rebuild the card index from stored decklists. |
 | `build` | Generate the static site into `dist/`. Needs no network. |
 | `serve` | Preview the built site on <http://localhost:8080>. |
 | `stats` | What your database holds, and how much is left to crawl. |
@@ -179,7 +198,7 @@ Add `--deck <tournamentId>` to print a full decklist, or `--json` for raw output
 
 ## What gets collected
 
-By default the crawler keeps **events with 50 or more players that used decklists**, and
+By default the crawler keeps **events with 16 or more players that used decklists**, and
 skips the rest. A small event with no lists submitted is only a ranking, which is not what
 this tool is for.
 
@@ -195,6 +214,25 @@ longer qualifies. It reports what it would remove and changes nothing unless you
 `--apply`.
 
 ---
+
+## Reprints
+
+The tournament API describes a decklist entry as `{count, set, number, name}` and nothing
+more — no card text. A name alone cannot decide whether two printings are the same card:
+this corpus holds **ten different Charcadet cards** that merely share a name, alongside
+**Mystery Garden MEG-122 and ASC-194**, which are one card printed twice.
+
+Limitless already answers this on each card page, so `prints` reads their grouping rather
+than guessing:
+
+```bash
+node src/cli.js prints
+```
+
+It looks up only cards it has never seen, caches permanently, and is safe to interrupt.
+Looking up one printing settles every other printing of that card at once. Card pages
+then cover all printings together, counting a deck that runs two printings as one deck
+with the copies summed, and any printing's URL resolves to the shared page.
 
 ## Finding players who changed their name
 
@@ -292,6 +330,22 @@ token bucket *and* resyncs from the server's `RateLimit` headers after each call
 whichever view is stricter, so it adapts automatically if Limitless changes the quota.
 Errors are typed and carry a `retryable` flag, so a network failure can never be mistaken
 for "player not found".
+
+### Custom date ranges
+
+Precomputed windows cannot answer an arbitrary range, so each archetype ships a sidecar
+of **day buckets** — `archetypes/<id>.days.json`, plus `archetypes-days.json` for the
+list — fetched only when someone actually picks a custom range. Day granularity is what
+makes "last N days" exact.
+
+They cover the most recent **400 days** on purpose. Unbounded they would grow with the
+whole archive rather than staying fixed like the windows, and the largest archetype's
+sidecar would reach tens of megabytes once the backfill runs to the 2020 floor. Bounded,
+the worst case is 368 KB (Dragapult) and it stays there. Anything older is still covered
+by the all-time window.
+
+A custom range and its equivalent window agree to about 0.4% — windows cut at a timestamp,
+custom ranges snap to whole days.
 
 ### Published data layout
 

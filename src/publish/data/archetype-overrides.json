@@ -1,0 +1,12 @@
+{
+  "_comment": "Hand corrections to the icon-based archetype grouping. 'decks' maps a deck_id to the base archetype it belongs under, overriding its first icon. 'names' sets a base archetype's display name, for groups the automatic naming gets wrong.",
+  "decks": {
+    "basic-box-m": "basic-box",
+    "ogerpon-ex": "basic-box"
+  },
+  "names": {
+    "ogerpon": "Ogerpon Meganium",
+    "basic-box": "Basic Box",
+    "substitute": "Other"
+  }
+}

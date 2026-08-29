@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { indexKeys, shard } from './search.js';
+import { buildCards, buildArchetypes } from './build-decks.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -37,6 +38,15 @@ const POKESPRITE = new Set(
 
 /** Handles observed are strictly [0-9_a-z]. Anything else would be unsafe as a path. */
 const SAFE_HANDLE = /^[a-z0-9_-]+$/;
+
+/** The hand-maintained archetype corrections, if present. */
+function archetypeOverrides() {
+    try {
+        return JSON.parse(readFileSync(join(here, "data", "archetype-overrides.json"), 'utf8'));
+    } catch {
+        return {};
+    }
+}
 
 function writeJson(path, value) {
     writeFileSync(path, JSON.stringify(value));
@@ -123,7 +133,7 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
 
     // Wipe only the generated subtrees, so a pruned or renamed player cannot leave a
     // stale file behind that the site would still happily serve.
-    for (const sub of ['players', 'decks', 'search']) {
+    for (const sub of ['players', 'decks', 'search', 'cards', 'archetypes']) {
         rmSync(join(dataDir, sub), { recursive: true, force: true });
     }
     mkdirSync(dataDir, { recursive: true });
@@ -253,12 +263,24 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
         if (written % 500 === 0) onProgress({ type: 'players', written, total: players.length });
     }
 
+    // Both add their own entries to the shared search index, so this has to happen
+    // before it is written out.
+    const icons = (raw) => deckIcons(raw, iconSources);
+    const cardsBuilt = buildCards(store, { dataDir, searchIndex, deckIcons: icons, onProgress });
+    const archesBuilt = buildArchetypes(store, {
+        dataDir, searchIndex, deckIcons: icons, overrides: archetypeOverrides(), onProgress,
+    });
+
     mkdirSync(join(dataDir, 'search'), { recursive: true });
     let bytesSearch = 0;
     for (const [key, entries] of searchIndex) {
         // Most-active first, so a truncated autocomplete list still shows the players
         // someone is most likely looking for.
-        entries.sort((a, b) => b.events - a.events || a.handle.localeCompare(b.handle));
+        // Players first, then archetypes, then cards: a bare name is nearly always a
+        // player, and a truncated list should not bury them under card matches.
+        const rank = (e) => (e.type === 'card' ? 2 : e.type === 'deck' ? 1 : 0);
+        entries.sort((a, b) =>
+            rank(a) - rank(b) || b.events - a.events || a.handle.localeCompare(b.handle));
         const json = JSON.stringify(entries);
         writeFileSync(join(dataDir, 'search', `${key}.json`), json);
         bytesSearch += json.length;
@@ -277,6 +299,8 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
             players: written,
             standings: stats.standings,
             decklists: listsWritten,
+            cards: cardsBuilt.cards,
+            archetypes: archesBuilt.archetypes,
         },
         decklistWindowMonths: decklistMonths,
         shardPrefixLength: 2,
@@ -290,11 +314,15 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
         icons: iconSources.size,
         searchBuckets: searchIndex.size,
         listsWritten,
+        cards: cardsBuilt.cards,
+        archetypes: archesBuilt.archetypes,
         bytes: {
             players: bytesPlayers,
             decks: bytesDecks,
             search: bytesSearch,
-            total: bytesPlayers + bytesDecks + bytesSearch,
+            cards: cardsBuilt.bytes,
+            archetypes: archesBuilt.bytes,
+            total: bytesPlayers + bytesDecks + bytesSearch + cardsBuilt.bytes + archesBuilt.bytes,
         },
         meta,
     };

@@ -12,6 +12,16 @@ import { ApiError } from '../api/errors.js';
 const PAGE_SIZE = 50; // the documented default and maximum for /tournaments
 
 /**
+ * Nothing older than this is ever discovered.
+ *
+ * The archive reaches back to 2021 and keeps growing at the old end as Limitless adds
+ * history, so an unbounded backfill has no natural stopping point. This gives it one:
+ * discovery stops here even with no --since, so a repeated `crawl` eventually finishes
+ * rather than running forever. A tighter --since still applies; a looser one is clamped.
+ */
+export const ARCHIVE_FLOOR = '2020-01-01T00:00:00.000Z';
+
+/**
  * Phase 1 — discover which tournaments exist and record them as pending.
  * Cheap: one request per 50 tournaments.
  *
@@ -53,6 +63,9 @@ export async function discover(api, store, {
     onProgress = () => {},
     signal,
 } = {}) {
+    // Never look further back than the floor, whatever was asked for.
+    const floor = since && since > ARCHIVE_FLOOR ? since : ARCHIVE_FLOOR;
+
     let discovered = 0;
     let pages = 0;
 
@@ -85,7 +98,7 @@ export async function discover(api, store, {
             if (list.length === 0) { hitEnd = true; break; }
 
             const inRange = list.filter(
-                (t) => (!since || t.date >= since) && (!until || t.date <= until),
+                (t) => t.date >= floor && (!until || t.date <= until),
             );
 
             let fresh = 0;
@@ -98,8 +111,9 @@ export async function discover(api, store, {
             });
 
             // The listing is ordered newest-first, so once an entire page falls below
-            // the lower bound, everything beyond it is older still.
-            if (since && list[list.length - 1].date < since) break;
+            // the lower bound, everything beyond it is older still. Reaching the floor
+            // is the end of the archive as far as this project is concerned.
+            if (list[list.length - 1].date < floor) { hitEnd = true; break; }
 
             // Nothing new on a page means we have caught up with what we already hold —
             // but only conclude that from a page that actually had rows in range, or an
@@ -155,8 +169,11 @@ export async function discover(api, store, {
         if (older.lastFetched >= deepFrom) {
             deepTo = older.lastFetched;
             store.setState(CURSOR, deepTo);
-            // Nothing is ever added to the old end, so reaching it once is permanent.
-            if (older.hitEnd) store.setState(COMPLETE, '1');
+            // Nothing is added to the old end below the floor, so reaching it is
+            // permanent — but only when it was the real floor. A run narrowed by a
+            // tighter --since also stops early, and recording that as "done" would
+            // leave later unrestricted runs believing there is nothing left to fetch.
+            if (older.hitEnd && floor === ARCHIVE_FLOOR) store.setState(COMPLETE, '1');
         }
     }
 
