@@ -350,15 +350,19 @@ function cmdBuild() {
         decklistMonths,
         onProgress: (p) => {
             if (p.type === 'unsafe') console.warn(`  skipped unsafe handle: ${JSON.stringify(p.handle)}`);
-            else console.log(`  ${p.written}/${p.total} players`);
+            else if (p.type === 'window') console.log(`  averaged ${p.decks} decks over the ${p.days || 'all-time'} window`);
+            else console.log(`  ${p.written}/${p.total} ${p.type}`);
         },
     });
 
     console.log();
-    console.log(`${r.players} player files, ${r.listsWritten} decklists, ${r.searchBuckets} search buckets`);
-    console.log(`  players/  ${mb(r.bytes.players)}`);
-    console.log(`  decks/    ${mb(r.bytes.decks)}`);
-    console.log(`  search/   ${mb(r.bytes.search)}`);
+    console.log(`${r.players} players, ${r.cards} cards, ${r.archetypes} archetypes, `
+        + `${r.listsWritten} decklists, ${r.searchBuckets} search buckets`);
+    console.log(`  players/     ${mb(r.bytes.players)}`);
+    console.log(`  decks/       ${mb(r.bytes.decks)}`);
+    console.log(`  cards/       ${mb(r.bytes.cards)}`);
+    console.log(`  archetypes/  ${mb(r.bytes.archetypes)}`);
+    console.log(`  search/      ${mb(r.bytes.search)}`);
     console.log(`  total     ${mb(r.bytes.total)}`);
     console.log();
     console.log(`Coverage ${r.meta.coverage.from?.slice(0, 10)} to ${r.meta.coverage.to?.slice(0, 10)}`

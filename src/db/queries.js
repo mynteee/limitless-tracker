@@ -227,6 +227,40 @@ export class Store {
                 LIMIT ?4 OFFSET ?5
             `),
 
+            /**
+             * Every deck id crossed with every card it plays, in one pass.
+             *
+             * The publish step needs an average decklist for 133 archetypes plus their
+             * variants across several windows. Asking per archetype is 400+ queries and
+             * minutes of work; this answers all of them at once, and the caller sums
+             * variants into their base.
+             */
+            allDeckCardTotals: db.prepare(`
+                SELECT s.deck_id AS deckId, cp.card_id AS cardId,
+                       SUM(cp.count) AS copies, COUNT(*) AS decksWith
+                FROM standing s
+                JOIN card_play cp ON cp.tournament_id = s.tournament_id AND cp.player = s.player
+                WHERE s.deck_id IS NOT NULL AND (?1 IS NULL OR s.date >= ?1)
+                GROUP BY s.deck_id, cp.card_id
+            `),
+
+            /** Decklist counts per deck id in a window — the averaging denominator. */
+            allDeckCounts: db.prepare(`
+                SELECT deck_id AS deckId, COUNT(*) AS decks
+                FROM standing
+                WHERE deck_id IS NOT NULL AND decklist IS NOT NULL
+                  AND (?1 IS NULL OR date >= ?1)
+                GROUP BY deck_id
+            `),
+
+            /** Every card, for the shared dictionary the archetype pages reference. */
+            allCards: db.prepare(`
+                SELECT c.id, c.name, c.set_ AS setCode, c.number, c.kind,
+                       (SELECT COUNT(*) FROM card_play WHERE card_id = c.id) AS decks
+                FROM card c
+                ORDER BY c.id
+            `),
+
             searchCards: db.prepare(`
                 SELECT c.id, c.name, c.set_ AS setCode, c.number, c.kind,
                        COUNT(cp.card_id) AS decks
@@ -546,6 +580,21 @@ export class Store {
 
     archetypeResults(deckIds, { since = null, until = null, limit = 50, offset = 0 } = {}) {
         return this.stmt.archetypeResults.all(JSON.stringify(deckIds), since, until, limit, offset);
+    }
+
+    allCards() {
+        return this.stmt.allCards.all();
+    }
+
+    /**
+     * Per-deck-id card totals and decklist counts for one window.
+     * @param {string|null} since ISO date, or null for all time
+     */
+    deckCardTotals(since = null) {
+        return {
+            totals: this.stmt.allDeckCardTotals.all(since),
+            counts: this.stmt.allDeckCounts.all(since),
+        };
     }
 
     cardIndexStats() {
