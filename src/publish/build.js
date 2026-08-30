@@ -7,18 +7,6 @@ import { buildCards, buildArchetypes } from './build-decks.js';
 const here = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Sprite names available from pokesprite (pokemon-gen8/regular).
- *
- * pokesprite stops at Generation 8, so roughly a third of current archetype icons —
- * every Gen 9 Pokemon and all the newer Megas — are simply not in it. Resolving each
- * icon here, at build time, means the site never fires a request that is known to 404.
- * Refresh with: node scripts/refresh-pokesprite.mjs
- */
-const POKESPRITE = new Set(
-    JSON.parse(readFileSync(join(here, 'data', 'pokesprite-names.json'), 'utf8')),
-);
-
-/**
  * Project the SQLite store into static JSON for GitHub Pages.
  *
  * The published site makes zero API calls: a visitor's request must never reach
@@ -52,19 +40,11 @@ function writeJson(path, value) {
     writeFileSync(path, JSON.stringify(value));
 }
 
-/**
- * Parse a deck's icon list, recording where each sprite should be fetched from.
- *
- * pokesprite is preferred where it has the sprite; anything newer falls back to the
- * icon Limitless serves itself, which covers Gen 9 and the current Megas.
- */
-function deckIcons(raw, iconSources) {
+/** Parse a deck's icon list. Every sprite comes from Limitless, so there is nothing
+ *  to record about where each one lives. */
+function deckIcons(raw) {
     const icons = JSON.parse(raw ?? 'null');
-    if (!Array.isArray(icons)) return null;
-    for (const name of icons) {
-        if (!iconSources.has(name)) iconSources.set(name, POKESPRITE.has(name) ? 'ps' : 'lt');
-    }
-    return icons;
+    return Array.isArray(icons) ? icons : null;
 }
 
 /**
@@ -156,8 +136,6 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
     const players = store.allPlayers();
     /** @type {Map<string, Array<object>>} */
     const searchIndex = new Map();
-    /** Archetype icon name -> 'ps' (pokesprite) or 'lt' (Limitless own CDN). */
-    const iconSources = new Map();
     const madeDirs = new Set();
 
     let written = 0;
@@ -214,7 +192,7 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
                 ties: r.ties,
                 dropRound: r.dropRound,
                 deck: r.deckId
-                    ? { id: r.deckId, name: r.deckName, icons: deckIcons(r.deckIcons, iconSources) }
+                    ? { id: r.deckId, name: r.deckName, icons: deckIcons(r.deckIcons) }
                     : null,
                 hasList: Boolean(include),
             };
@@ -274,7 +252,7 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
 
     // Both add their own entries to the shared search index, so this has to happen
     // before it is written out.
-    const icons = (raw) => deckIcons(raw, iconSources);
+    const icons = (raw) => deckIcons(raw);
     const cardsBuilt = buildCards(store, { dataDir, searchIndex, deckIcons: icons, onProgress });
     const archesBuilt = buildArchetypes(store, {
         dataDir, searchIndex, deckIcons: icons, overrides: archetypeOverrides(), onProgress,
@@ -295,7 +273,6 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
         bytesSearch += json.length;
     }
 
-    writeJson(join(dataDir, 'icons.json'), Object.fromEntries([...iconSources].sort()));
 
     const cov = store.coverage();
     const stats = store.stats();
@@ -320,7 +297,6 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
     return {
         players: written,
         skipped,
-        icons: iconSources.size,
         searchBuckets: searchIndex.size,
         listsWritten,
         cards: cardsBuilt.cards,

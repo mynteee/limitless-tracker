@@ -15,7 +15,6 @@
     "cli": "node --disable-warning=ExperimentalWarning src/cli.js",
     "build": "node --disable-warning=ExperimentalWarning src/cli.js build",
     "serve": "node --disable-warning=ExperimentalWarning src/cli.js serve",
-    "prune": "node --disable-warning=ExperimentalWarning src/cli.js prune",
-    "refresh-sprites": "node scripts/refresh-pokesprite.mjs"
+    "prune": "node --disable-warning=ExperimentalWarning src/cli.js prune"
   }
 }

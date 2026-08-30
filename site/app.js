@@ -8,16 +8,22 @@ const CARD_CDN = 'https://limitlesstcg.nyc3.cdn.digitaloceanspaces.com/tpci';
 /** 274x381, ~60 KB. Enough for a grid at 2x without pulling the 700 KB original. */
 const CARD_SIZE = '_SM';
 
-/** pokesprite covers Gen 1-8; `data/icons.json` says which names it actually has. */
-const POKESPRITE_CDN = 'https://cdn.jsdelivr.net/gh/msikma/pokesprite@master/pokemon-gen8/regular';
-/** Limitless' own sprites, used for Gen 9 and the current Megas that pokesprite lacks. */
+/**
+ * Archetype sprites, all from Limitless.
+ *
+ * pokesprite used to serve the Gen 1-8 names, but it pads every sprite to a uniform
+ * 68x56 canvas while Limitless crops tight at ~41x34 — so in the same box a pokesprite
+ * Pokemon rendered visibly smaller than the one beside it. One source keeps them
+ * consistent, and Limitless has all 160 icons in use.
+ */
 const LIMITLESS_CDN = 'https://r2.limitlesstcg.net/pokemon/gen9';
+/** The "Other deck" placeholder is not a Pokemon and lives on Limitless' other host. */
+const SUBSTITUTE_ICON = 'https://limitless3.nyc3.cdn.digitaloceanspaces.com/pokemon/substitute.png';
 const FLAG_CDN = 'https://r2.limitlesstcg.net/flags';
 
 const view = document.getElementById('view');
 const input = document.getElementById('q');
 
-let icons = {};
 let meta = null;
 
 const cache = new Map();
@@ -43,8 +49,8 @@ function ordinal(n) {
 }
 
 function iconUrl(name) {
-    const base = icons[name] === 'ps' ? POKESPRITE_CDN : LIMITLESS_CDN;
-    return `${base}/${encodeURIComponent(name)}.png`;
+    if (name === 'substitute') return SUBSTITUTE_ICON;
+    return `${LIMITLESS_CDN}/${encodeURIComponent(name)}.png`;
 }
 
 const pad3 = (n) => String(n).padStart(3, '0');
@@ -900,8 +906,7 @@ document.getElementById('search-form').addEventListener('submit', (e) => e.preve
 window.addEventListener('hashchange', route);
 
 (async function start() {
-    [meta, icons] = await Promise.all([getJson('data/meta.json'), getJson('data/icons.json')]);
-    icons = icons ?? {};
+    meta = await getJson('data/meta.json');
     if (meta) {
         document.getElementById('meta-line').textContent =
             `${meta.counts.tournaments.toLocaleString()} tournaments · ` +

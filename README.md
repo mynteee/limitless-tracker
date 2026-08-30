@@ -285,8 +285,7 @@ the last year. Placement history for everyone is always included and costs very 
 - Tournament results: the [Limitless API](https://docs.limitlesstcg.com/developer.html).
   No API key required.
 - Card images and card pages: Limitless' own CDN.
-- Archetype sprites: [pokesprite](https://github.com/msikma/pokesprite), falling back to
-  Limitless' sprites for Pokémon it does not cover.
+- Archetype sprites: Limitless' own sprite set.
 
 This project is not affiliated with Limitless. Please be considerate of their API — the
 crawler is deliberately rate-limited, and you should not remove those limits.
@@ -306,7 +305,6 @@ src/
 ├── publish/  build.js (SQLite → static JSON) · search.js (shared rules) · serve.js
 └── cli.js
 site/                          the front end, copied verbatim into dist/
-scripts/refresh-pokesprite.mjs
 archive/tracker.js             the original prototype
 data/limitless.db              gitignored
 dist/                          gitignored
@@ -401,10 +399,14 @@ needed. Sizes: `_XS` 136×189 · `_SM` 274×381 · `_MD` · `_LG` 460×640 · no
 
 ### Archetype sprites
 
-pokesprite covers Generations 1–8 only. Every Gen 9 Pokémon and all the current Megas are
-absent — 33 of the 109 icons in use — and fall back to `r2.limitlesstcg.net`. Which source
-to use is resolved at build time into `data/icons.json`, from a checked-in list of
-pokesprite's contents, so the site never requests a sprite it knows will 404. Refresh that
-list with `npm run refresh-sprites`.
+All from `r2.limitlesstcg.net/pokemon/gen9`, which covers 159 of the 160 icons in use.
+The odd one out is `substitute`, the "Other deck" placeholder, served from Limitless'
+other host.
+
+This used to prefer pokesprite for the Gen 1-8 names and fall back to Limitless for the
+rest, but pokesprite pads every sprite to a uniform 68x56 canvas while Limitless crops
+tight at ~41x34 — so in the same box a pokesprite Pokemon rendered visibly smaller than
+the Limitless one beside it. One source is worth more than either sprite set's merits.
+
 
 </details>
