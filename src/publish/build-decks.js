@@ -14,13 +14,15 @@ import { groupArchetypes } from './archetypes.js';
 export const WINDOWS = [30, 90, 0];
 
 /**
- * Results embedded directly in a card page, for the view it opens on.
+ * Rows of the newest event embedded directly in a card page, for the view it opens on.
  *
- * The complete history lives in packed sidecar pages instead — see HISTORY_PAGE_SIZE.
- * Only the newest event of these is shown initially, so this only has to be deep
- * enough to cover one event's worth of entrants.
+ * A card page opens on its newest event alone, so that is exactly what it carries -
+ * nothing from older events, which it would never render. The bound is only there for
+ * the largest events: a staple at a 4,000-player Internationals would otherwise put
+ * most of a megabyte on the page before a visitor sees anything. Past it the event
+ * simply continues into the history below, which picks up at the same row.
  */
-const CARD_RESULT_LIMIT = 150;
+const LATEST_EVENT_LIMIT = 500;
 
 /**
  * Rows per page of a card's full history.
@@ -129,8 +131,24 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
         // -1 is SQLite's "no limit": the whole history, however long.
         const rows = store.getGroupResults(ids, { limit: -1 });
         if (rows.length === 0) continue;
-        const decks = store.countGroupDecks(ids);
-        const historyPages = Math.ceil(rows.length / HISTORY_PAGE_SIZE);
+        // Counted from the results themselves rather than from the card index, so the
+        // headline figure is exactly what the page and its history can account for.
+        const decks = rows.length;
+
+        // Rows come back newest event first, so the newest event is the leading run of
+        // rows sharing its id.
+        const latestTournament = rows[0].tournamentId;
+        let latestTotal = 0;
+        while (latestTotal < rows.length && rows[latestTotal].tournamentId === latestTournament) {
+            latestTotal++;
+        }
+
+        // Where the page stops and the packed history starts. Keeping the two flush is
+        // the whole point: the history then repeats nothing already on the page, and
+        // skips nothing either.
+        const embedded = Math.min(latestTotal, LATEST_EVENT_LIMIT);
+        const historyRows = rows.length - embedded;
+        const historyPages = Math.ceil(historyRows / HISTORY_PAGE_SIZE);
 
         const payload = {
             id: primary.id,
@@ -144,11 +162,17 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
                 id: c.id, setCode: c.setCode, number: c.number, decks: c.decks,
             })),
             // The site shows this event on its own first, then the rest on request.
-            latestTournament: rows[0].tournamentId,
-            // Complete, not truncated: how many pages of packed history sit beside this.
+            latestTournament,
+            // How many played it at that event. Larger than `results` only when the
+            // event ran past LATEST_EVENT_LIMIT; the page says so when they differ, so
+            // a visitor knows its table stops short and the history carries that same
+            // event on.
+            latestTotal,
+            // Complete, not truncated: what sits in the packed pages beside this.
+            historyRows,
             historyPages,
             historyPageSize: HISTORY_PAGE_SIZE,
-            results: rows.slice(0, CARD_RESULT_LIMIT).map((r) => ({
+            results: rows.slice(0, embedded).map((r) => ({
                 tournamentId: r.tournamentId,
                 tournament: r.tournamentName,
                 date: r.date.slice(0, 10),
@@ -168,11 +192,14 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
         bytes += json.length;
         written++;
 
-        // Packed history pages: [tournamentIndex, placing, handle, deckIndex, copies].
-        // A null placing means the player was unplaced, and stays null rather than
-        // becoming a zero.
+        // Packed history pages, picking up where the embedded event stopped:
+        // [tournamentIndex, placing, handle, deckIndex, copies]. A null placing means
+        // the player was unplaced, and stays null rather than becoming a zero.
+        // A card whose whole history is its newest event has none of these, and none
+        // are written.
         for (let page = 0; page < historyPages; page++) {
-            const slice = rows.slice(page * HISTORY_PAGE_SIZE, (page + 1) * HISTORY_PAGE_SIZE);
+            const from = embedded + page * HISTORY_PAGE_SIZE;
+            const slice = rows.slice(from, from + HISTORY_PAGE_SIZE);
             const packed = slice.map((r) => [
                 tIndex.get(r.tournamentId) ?? -1,
                 r.placing,
