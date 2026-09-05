@@ -34,8 +34,9 @@ dates. Every variant has its own average however few decks it has, with the samp
 shown rather than being silently replaced.
 
 **Cards** — search them at `#/cards`. A card page lists the decklists that ran it, newest
-event first and sorted by placing, with the rest of its history behind a toggle. Clicking
-a row opens that decklist in place. Reprints share one page — see [Reprints](#reprints).
+event first and sorted by placing, with its **complete** history behind a toggle —
+nothing is truncated, however common the card. Clicking a row opens that decklist in
+place. Reprints share one page — see [Reprints](#reprints).
 
 ---
 
@@ -356,6 +357,21 @@ by the all-time window.
 
 A custom range and its equivalent window agree to about 0.4% — windows cut at a timestamp,
 custom ranges snap to whole days.
+
+### Full card history
+
+A card page embeds only its newest event. Everything older lives in packed sidecar pages
+(`cards/<pp>/<ID>.h<N>.json`) fetched a page at a time when the history is opened, because
+a staple is in far more decklists than a page can usefully hold — Boss's Orders appears in
+97,983.
+
+Rows are packed against two shared dictionaries, `tournaments.json` and `decks.json`,
+referencing them by index. That takes a row from roughly 150 bytes of repeated event names
+down to about 30, which is what makes shipping all 2.9M of them practical. The
+dictionaries are 75 KB and 12 KB, fetched once and reused by every card page.
+
+Most cards never page at all: the median card has 22 results, and 71% have fewer than the
+150 already on the page.
 
 ### Published data layout
 

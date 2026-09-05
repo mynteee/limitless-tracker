@@ -401,17 +401,8 @@ async function renderCard(id) {
     }
 
     // The default view is the newest event on its own, which is how Limitless shows it.
+    // Everything older comes from the packed history pages, loaded on demand.
     const latest = card.results.filter((r) => r.tournamentId === card.latestTournament);
-    const rest = card.results.filter((r) => r.tournamentId !== card.latestTournament);
-
-    const historyRows = rest.map((r, i) => {
-        // Label each event once as the list walks back through them.
-        const header = i === 0 || r.tournamentId !== rest[i - 1].tournamentId
-            ? `<div class="crow sub"><span></span><span class="ev">${esc(r.tournament)}</span>
-               <span class="muted">${esc(r.date)}</span><span></span></div>`
-            : '';
-        return header + cardResultRows([r]);
-    }).join('');
 
     view.innerHTML = `
       <div class="card-head">
@@ -436,24 +427,88 @@ async function renderCard(id) {
         ${cardResultRows(latest)}
       </div>
 
-      ${rest.length ? `<button class="more" id="card-more">Show full history (${rest.length} more)</button>
-      <div class="ctable" id="card-history" hidden>${historyRows}</div>` : ''}
-
-      ${card.decks > card.results.length
-        ? `<p class="muted note">Showing the ${card.results.length} most recent of
-           ${card.decks.toLocaleString()} decklists.</p>` : ''}
+      ${card.decks > latest.length ? `
+        <button class="more" id="card-more">Show full history (${(card.decks - latest.length).toLocaleString()} more)</button>
+        <div id="card-history" hidden>
+          <div class="ctable" id="card-history-rows"></div>
+          <button class="more" id="card-more-pages" hidden></button>
+        </div>` : ''}
     `;
 
     wireRows(view);
+    wireCardHistory(card, latest.length);
+}
 
+/**
+ * Full history, loaded from the packed sidecar pages.
+ *
+ * The card page itself only carries its newest event; everything else is fetched on
+ * demand, a page at a time. A staple appears in tens of thousands of decklists, so
+ * shipping that inline would make every card page enormous for a view most visitors
+ * never open.
+ */
+async function wireCardHistory(card, shownAlready) {
     const btn = document.getElementById('card-more');
-    if (btn) {
-        btn.addEventListener('click', () => {
-            const box = document.getElementById('card-history');
-            box.hidden = !box.hidden;
-            btn.textContent = box.hidden ? `Show full history (${rest.length} more)` : 'Hide history';
-        });
-    }
+    if (!btn) return;
+
+    const box = document.getElementById('card-history');
+    const rowsBox = document.getElementById('card-history-rows');
+    const moreBtn = document.getElementById('card-more-pages');
+    const remaining = card.decks - shownAlready;
+    let loaded = 0;
+
+    const loadPage = async () => {
+        moreBtn.disabled = true;
+        moreBtn.textContent = 'Loading…';
+        const [dicts, page] = await Promise.all([
+            historyDicts(),
+            getJson(`data/cards/${shard(card.id.toLowerCase())}/${encodeURIComponent(card.id)}.h${loaded}.json`),
+        ]);
+        if (!page) { moreBtn.hidden = true; return; }
+
+        rowsBox.insertAdjacentHTML('beforeend', cardResultRows(page.map((r) => unpackRow(r, dicts))));
+        wireRows(rowsBox);
+        loaded++;
+
+        const left = card.decks - loaded * (card.historyPageSize ?? page.length);
+        moreBtn.hidden = loaded >= (card.historyPages ?? 1);
+        moreBtn.disabled = false;
+        moreBtn.textContent = `Load ${Math.max(0, left).toLocaleString()} more`;
+    };
+
+    btn.addEventListener('click', async () => {
+        box.hidden = !box.hidden;
+        btn.textContent = box.hidden
+            ? `Show full history (${remaining.toLocaleString()} more)`
+            : 'Hide history';
+        if (!box.hidden && loaded === 0) await loadPage();
+    });
+    moreBtn.addEventListener('click', loadPage);
+}
+
+/** Tournament and deck dictionaries, fetched once and reused by every card page. */
+let dictsPromise;
+function historyDicts() {
+    dictsPromise ??= Promise.all([getJson('data/tournaments.json'), getJson('data/decks.json')])
+        .then(([tournaments, decks]) => ({ tournaments: tournaments ?? [], decks: decks ?? [] }));
+    return dictsPromise;
+}
+
+/** [tournamentIndex, placing, handle, deckIndex, copies] back into a result row. */
+function unpackRow([ti, placing, handle, di, count], { tournaments, decks }) {
+    const t = tournaments[ti] ?? [];
+    const d = di >= 0 ? decks[di] : null;
+    return {
+        tournamentId: t[0] ?? '',
+        tournament: t[1] ?? '—',
+        date: t[2] ?? '',
+        fieldSize: t[3] ?? null,
+        placing,
+        handle,
+        name: handle,
+        deck: d ? { id: d[0], name: d[1], icons: d[2] } : null,
+        count,
+    };
 }
 
 /* ── archetype pages ──────────────────────────────────────────────────────── */

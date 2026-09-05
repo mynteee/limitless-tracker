@@ -13,8 +13,24 @@ import { groupArchetypes } from './archetypes.js';
 /** Windows offered on an archetype page. 0 means all time. */
 export const WINDOWS = [30, 90, 0];
 
-/** Results kept per card page. The default view shows only the newest event of these. */
+/**
+ * Results embedded directly in a card page, for the view it opens on.
+ *
+ * The complete history lives in packed sidecar pages instead — see HISTORY_PAGE_SIZE.
+ * Only the newest event of these is shown initially, so this only has to be deep
+ * enough to cover one event's worth of entrants.
+ */
 const CARD_RESULT_LIMIT = 150;
+
+/**
+ * Rows per page of a card's full history.
+ *
+ * Nothing is truncated any more, but a card can be extremely common - Boss's Orders
+ * appears in 97,983 decklists - so the history is paged rather than shipped as one
+ * file. Pages are packed against the shared tournament and deck dictionaries, which
+ * takes a row from roughly 150 bytes of repeated event names down to about 30.
+ */
+const HISTORY_PAGE_SIZE = 2000;
 
 /** Placements kept per archetype page. */
 const ARCHETYPE_RESULT_LIMIT = 120;
@@ -53,6 +69,23 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
     const cards = store.allCards();
     mkdirSync(join(dataDir, 'cards'), { recursive: true });
 
+    // Dictionaries the packed history references by index. Written once and shared by
+    // every card page, so an event name is stored once rather than on each of the tens
+    // of thousands of rows that mention it.
+    const tournaments = store.publishedTournaments();
+    const tIndex = new Map(tournaments.map((t, i) => [t.id, i]));
+    writeJson(
+        join(dataDir, 'tournaments.json'),
+        tournaments.map((t) => [t.id, t.name, t.date.slice(0, 10), t.players]),
+    );
+
+    const deckMeta = store.allDeckMeta();
+    const dIndex = new Map(deckMeta.map((d, i) => [d.id, i]));
+    writeJson(
+        join(dataDir, 'decks.json'),
+        deckMeta.map((d) => [d.id, d.name, deckIcons(d.icons)]),
+    );
+
     // Shared dictionary, so archetype averages can reference a card by id instead of
     // repeating its name and set in every window of every archetype.
     writeJson(
@@ -82,6 +115,7 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
     };
 
     let bytes = 0;
+    let historyBytes = 0;
     let written = 0;
     let merged = 0;
 
@@ -92,9 +126,11 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
         const primary = prints[0];
         const ids = prints.map((c) => c.id);
 
-        const rows = store.getGroupResults(ids, { limit: CARD_RESULT_LIMIT });
+        // -1 is SQLite's "no limit": the whole history, however long.
+        const rows = store.getGroupResults(ids, { limit: -1 });
         if (rows.length === 0) continue;
         const decks = store.countGroupDecks(ids);
+        const historyPages = Math.ceil(rows.length / HISTORY_PAGE_SIZE);
 
         const payload = {
             id: primary.id,
@@ -109,7 +145,10 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
             })),
             // The site shows this event on its own first, then the rest on request.
             latestTournament: rows[0].tournamentId,
-            results: rows.map((r) => ({
+            // Complete, not truncated: how many pages of packed history sit beside this.
+            historyPages,
+            historyPageSize: HISTORY_PAGE_SIZE,
+            results: rows.slice(0, CARD_RESULT_LIMIT).map((r) => ({
                 tournamentId: r.tournamentId,
                 tournament: r.tournamentName,
                 date: r.date.slice(0, 10),
@@ -128,6 +167,23 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
         writeFileSync(join(dirFor(primary.id), `${primary.id}.json`), json);
         bytes += json.length;
         written++;
+
+        // Packed history pages: [tournamentIndex, placing, handle, deckIndex, copies].
+        // A null placing means the player was unplaced, and stays null rather than
+        // becoming a zero.
+        for (let page = 0; page < historyPages; page++) {
+            const slice = rows.slice(page * HISTORY_PAGE_SIZE, (page + 1) * HISTORY_PAGE_SIZE);
+            const packed = slice.map((r) => [
+                tIndex.get(r.tournamentId) ?? -1,
+                r.placing,
+                r.player,
+                r.deckId !== null ? (dIndex.get(r.deckId) ?? -1) : -1,
+                r.count,
+            ]);
+            const pageJson = JSON.stringify(packed);
+            writeFileSync(join(dirFor(primary.id), `${primary.id}.h${page}.json`), pageJson);
+            historyBytes += pageJson.length;
+        }
         if (prints.length > 1) merged += prints.length - 1;
 
         // Other printings resolve to the page rather than 404ing, so a link to any
@@ -152,7 +208,7 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
         if (written % 250 === 0) onProgress({ type: 'cards', written, total: groups.size });
     }
 
-    return { cards: written, mergedPrints: merged, bytes };
+    return { cards: written, mergedPrints: merged, bytes: bytes + historyBytes, historyBytes };
 }
 
 /**

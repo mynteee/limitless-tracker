@@ -338,6 +338,16 @@ export class Store {
                 )
             `),
 
+            /** Every tournament that has stored standings, for the shared dictionary. */
+            publishedTournaments: db.prepare(`
+                SELECT t.id, t.name, t.date, t.players
+                FROM tournament t
+                WHERE EXISTS (SELECT 1 FROM standing s WHERE s.tournament_id = t.id)
+                ORDER BY t.date DESC
+            `),
+
+            allDeckMeta: db.prepare(`SELECT id, name, icons FROM deck ORDER BY id`),
+
             cardsWithoutPrints: db.prepare(`
                 SELECT c.id, c.set_ AS setCode, c.number, c.name
                 FROM card c
@@ -764,8 +774,17 @@ export class Store {
         };
     }
 
+    /** @param {{limit?: number}} [opts] limit -1 for the complete history */
     getGroupResults(cardIds, { limit = 150 } = {}) {
         return this.stmt.groupResults.all(JSON.stringify(cardIds), limit);
+    }
+
+    publishedTournaments() {
+        return this.stmt.publishedTournaments.all();
+    }
+
+    allDeckMeta() {
+        return this.stmt.allDeckMeta.all();
     }
 
     countGroupDecks(cardIds) {
