@@ -330,14 +330,6 @@ export class Store {
                 ORDER BY g.date DESC, s.placing IS NULL, s.placing ASC
             `),
 
-            countGroupDecks: db.prepare(`
-                SELECT COUNT(*) AS n FROM (
-                    SELECT 1 FROM card_play
-                    WHERE card_id IN (SELECT value FROM json_each(?1))
-                    GROUP BY tournament_id, player
-                )
-            `),
-
             /** Every tournament that has stored standings, for the shared dictionary. */
             publishedTournaments: db.prepare(`
                 SELECT t.id, t.name, t.date, t.players
@@ -607,7 +599,16 @@ export class Store {
                 WHERE id = ?
             `);
             const now = new Date().toISOString();
-            for (const id of ids) { dropRows.run(id); tombstone.run(now, id); }
+            for (const id of ids) {
+                // The card index is derived from the decklists on these rows, so it goes
+                // with them. Left behind it describes standings that no longer exist:
+                // every count taken from card_play alone then includes decks nothing can
+                // show, which is how a card page came to claim more decklists than its
+                // own history holds.
+                this.stmt.deleteCardPlays.run(id);
+                dropRows.run(id);
+                tombstone.run(now, id);
+            }
             this.db.exec('COMMIT');
         } catch (err) {
             this.db.exec('ROLLBACK');
@@ -785,10 +786,6 @@ export class Store {
 
     allDeckMeta() {
         return this.stmt.allDeckMeta.all();
-    }
-
-    countGroupDecks(cardIds) {
-        return this.stmt.countGroupDecks.get(JSON.stringify(cardIds)).n;
     }
 
     cardsWithoutPrints(limit = -1) {

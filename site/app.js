@@ -321,9 +321,17 @@ async function toggleRowDecklist(row) {
     showDecklist(box, list);
 }
 
-/** Wire every .crow inside a container to expand its decklist. */
+/**
+ * Wire every result row inside a container to expand its decklist.
+ *
+ * Only rows that name a decklist, and only once each. The card history grows a page at
+ * a time and is re-wired after every one, so a row that already has its listener must
+ * not collect a second: two listeners open the list and immediately close it again,
+ * which reads as a dead row. Header rows carry no handle and are skipped.
+ */
 function wireRows(container) {
-    container.querySelectorAll('.crow').forEach((row) => {
+    container.querySelectorAll('.crow[data-handle]:not([data-wired])').forEach((row) => {
+        row.dataset.wired = '1';
         row.addEventListener('click', (e) => {
             // The player link inside the row still navigates.
             if (e.target.closest('a')) return;
@@ -401,8 +409,9 @@ async function renderCard(id) {
     }
 
     // The default view is the newest event on its own, which is how Limitless shows it.
-    // Everything older comes from the packed history pages, loaded on demand.
-    const latest = card.results.filter((r) => r.tournamentId === card.latestTournament);
+    // The build embeds exactly those rows; everything the page does not already show
+    // comes from the packed history pages, loaded on demand.
+    const latest = card.results;
 
     view.innerHTML = `
       <div class="card-head">
@@ -427,16 +436,22 @@ async function renderCard(id) {
         ${cardResultRows(latest)}
       </div>
 
-      ${card.decks > latest.length ? `
-        <button class="more" id="card-more">Show full history (${(card.decks - latest.length).toLocaleString()} more)</button>
+      ${card.latestTotal > latest.length
+        ? `<p class="muted note">The top ${latest.length.toLocaleString()} of
+           ${card.latestTotal.toLocaleString()} at this event. The rest of it opens with
+           the history below.</p>` : ''}
+
+      ${card.historyRows > 0 ? `
+        <button class="more" id="card-more">Show full history (${card.historyRows.toLocaleString()} more)</button>
         <div id="card-history" hidden>
           <div class="ctable" id="card-history-rows"></div>
+          <p class="muted note" id="card-history-status" hidden></p>
           <button class="more" id="card-more-pages" hidden></button>
         </div>` : ''}
     `;
 
     wireRows(view);
-    wireCardHistory(card, latest.length);
+    wireCardHistory(card);
 }
 
 /**
@@ -447,39 +462,71 @@ async function renderCard(id) {
  * shipping that inline would make every card page enormous for a view most visitors
  * never open.
  */
-async function wireCardHistory(card, shownAlready) {
+async function wireCardHistory(card) {
     const btn = document.getElementById('card-more');
     if (!btn) return;
 
     const box = document.getElementById('card-history');
     const rowsBox = document.getElementById('card-history-rows');
+    const status = document.getElementById('card-history-status');
     const moreBtn = document.getElementById('card-more-pages');
-    const remaining = card.decks - shownAlready;
+
     let loaded = 0;
+    let shown = 0;
+    // A staple's first page is a real fetch, and the toggle stays clickable during it.
+    // Without this a fast second open starts the same page over and appends it twice.
+    let loading = false;
+    /** An event is labelled once, where it starts. One can straddle a page boundary, so
+     *  which event the list is in has to carry across fetches; starting from nothing
+     *  means the history always names the event it opens on, including the newest one
+     *  where the page's own table stopped part-way through it. */
+    let labelled = null;
 
     const loadPage = async () => {
+        if (loading) return;
+        loading = true;
         moreBtn.disabled = true;
-        moreBtn.textContent = 'Loading…';
+        status.hidden = false;
+        status.textContent = 'Loading…';
+
         const [dicts, page] = await Promise.all([
             historyDicts(),
             getJson(`data/cards/${shard(card.id.toLowerCase())}/${encodeURIComponent(card.id)}.h${loaded}.json`),
         ]);
-        if (!page) { moreBtn.hidden = true; return; }
+        // Say so rather than quietly stopping short of a history billed as complete.
+        if (!page) {
+            status.textContent = 'Could not load the rest of this history.';
+            moreBtn.disabled = false;
+            loading = false;
+            return;
+        }
 
-        rowsBox.insertAdjacentHTML('beforeend', cardResultRows(page.map((r) => unpackRow(r, dicts))));
+        const html = page.map((packed) => {
+            const r = unpackRow(packed, dicts);
+            // Label each event once, as the list walks back through them.
+            const header = r.tournamentId === labelled ? '' :
+                `<div class="crow sub"><span></span><span class="ev">${esc(r.tournament)}</span>
+                 <span class="muted">${esc(r.date)}</span><span></span></div>`;
+            labelled = r.tournamentId;
+            return header + cardResultRows([r]);
+        }).join('');
+
+        rowsBox.insertAdjacentHTML('beforeend', html);
         wireRows(rowsBox);
         loaded++;
+        shown += page.length;
 
-        const left = card.decks - loaded * (card.historyPageSize ?? page.length);
-        moreBtn.hidden = loaded >= (card.historyPages ?? 1);
+        status.hidden = true;
+        moreBtn.hidden = loaded >= card.historyPages;
         moreBtn.disabled = false;
-        moreBtn.textContent = `Load ${Math.max(0, left).toLocaleString()} more`;
+        moreBtn.textContent = `Load ${Math.max(0, card.historyRows - shown).toLocaleString()} more`;
+        loading = false;
     };
 
     btn.addEventListener('click', async () => {
         box.hidden = !box.hidden;
         btn.textContent = box.hidden
-            ? `Show full history (${remaining.toLocaleString()} more)`
+            ? `Show full history (${card.historyRows.toLocaleString()} more)`
             : 'Hide history';
         if (!box.hidden && loaded === 0) await loadPage();
     });

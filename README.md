@@ -33,10 +33,11 @@ all time, or a **Custom…** range given either as "last N days" or as explicit 
 dates. Every variant has its own average however few decks it has, with the sample size
 shown rather than being silently replaced.
 
-**Cards** — search them at `#/cards`. A card page lists the decklists that ran it, newest
-event first and sorted by placing, with its **complete** history behind a toggle —
-nothing is truncated, however common the card. Clicking a row opens that decklist in
-place. Reprints share one page — see [Reprints](#reprints).
+**Cards** — search them at `#/cards`. A card page lists the decklists that ran it at its
+newest event, sorted by placing, with the rest of its **complete** history behind a
+toggle — every earlier event, labelled, and nothing truncated however common the card.
+Clicking a row opens that decklist in place. Reprints share one page — see
+[Reprints](#reprints).
 
 ---
 
@@ -360,18 +361,30 @@ custom ranges snap to whole days.
 
 ### Full card history
 
-A card page embeds only its newest event. Everything older lives in packed sidecar pages
-(`cards/<pp>/<ID>.h<N>.json`) fetched a page at a time when the history is opened, because
-a staple is in far more decklists than a page can usefully hold — Boss's Orders appears in
-97,983.
+A card page embeds its newest event and nothing else. Everything the page does not already
+show lives in packed sidecar pages (`cards/<pp>/<ID>.h<N>.json`), fetched a page at a time
+when the history is opened, because a staple is in far more decklists than a page can
+usefully hold — Boss's Orders appears in 97,983.
+
+The two halves are cut at the same row. The page carries results `0..n`, the first sidecar
+page starts at `n` — so the history repeats nothing already on screen and skips nothing
+between them, and `results` plus every packed row is exactly the count in the headline.
+`historyRows` says how many that is, which is what the toggle counts down.
 
 Rows are packed against two shared dictionaries, `tournaments.json` and `decks.json`,
 referencing them by index. That takes a row from roughly 150 bytes of repeated event names
 down to about 30, which is what makes shipping all 2.9M of them practical. The
 dictionaries are 75 KB and 12 KB, fetched once and reused by every card page.
 
-Most cards never page at all: the median card has 22 results, and 71% have fewer than the
-150 already on the page.
+The history labels each event where it starts, and an event can straddle a page boundary,
+so the client carries the last one labelled across fetches rather than re-labelling from
+the top of every page.
+
+Only the largest events are bounded on the page itself, at 500 rows: a staple at a
+4,000-player Internationals would otherwise put most of a megabyte in front of a visitor
+before anything rendered. Past that the event simply continues into the history, and the
+page says so. Most cards never page at all — the median card has 22 results — and a card
+whose whole history is its newest event ships no sidecar pages.
 
 ### Published data layout
 
