@@ -65,9 +65,10 @@ function sinceFor(days) {
  * @param {object} opts
  * @param {string} opts.dataDir
  * @param {Map<string, object[]>} opts.searchIndex shared with the player build
+ * @param {ReturnType<import('./canonical.js').canonicalPrints>} opts.canon the print shown for each card
  * @param {(iconsJson: string|null) => string[]} opts.deckIcons parses and records icon sources
  */
-export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress = () => {} }) {
+export function buildCards(store, { dataDir, searchIndex, canon, deckIcons, onProgress = () => {} }) {
     const cards = store.allCards();
     mkdirSync(join(dataDir, 'cards'), { recursive: true });
 
@@ -99,14 +100,15 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
     // same card and share a page; the ten different Charcadets do not, because they are
     // ten different cards that merely share a name. `card_print` holds that distinction,
     // scraped from Limitless. A card never looked up falls back to being its own group,
-    // so an incomplete scrape splits pages rather than merging the wrong ones.
+    // so an incomplete scrape splits pages rather than merging the wrong ones. Each group
+    // is keyed by the print it is shown as, which is also the page's id and URL.
     /** @type {Map<string, typeof cards>} */
     const groups = new Map();
     for (const card of cards) {
         if (card.decks === 0) continue;
-        const groupId = store.printGroupOf(card.id) ?? card.id;
-        if (!groups.has(groupId)) groups.set(groupId, []);
-        groups.get(groupId).push(card);
+        const shownAs = canon.get(card.id)?.id ?? card.id;
+        if (!groups.has(shownAs)) groups.set(shownAs, []);
+        groups.get(shownAs).push(card);
     }
 
     const made = new Set();
@@ -121,10 +123,11 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
     let written = 0;
     let merged = 0;
 
-    for (const prints of groups.values()) {
-        // Most-played printing names the page: it is the one people recognise, and it
-        // keeps the URL on the print that actually sees play.
-        prints.sort((a, b) => b.decks - a.decks || a.id.localeCompare(b.id));
+    for (const [shownAs, prints] of groups) {
+        // The print current tournaments list names the page, so it matches what a player
+        // sees in today's decklists. The rest follow, most-played first.
+        prints.sort((a, b) =>
+            (b.id === shownAs) - (a.id === shownAs) || b.decks - a.decks || a.id.localeCompare(b.id));
         const primary = prints[0];
         const ids = prints.map((c) => c.id);
 
@@ -242,10 +245,22 @@ export function buildCards(store, { dataDir, searchIndex, deckIcons, onProgress 
  * @param {import('../db/queries.js').Store} store
  */
 export function buildArchetypes(store, {
-    dataDir, searchIndex, deckIcons, overrides = {}, onProgress = () => {},
+    dataDir, searchIndex, canon, deckIcons, overrides = {}, onProgress = () => {},
 }) {
     const archetypes = groupArchetypes(store.allDecks(), overrides);
     mkdirSync(join(dataDir, 'archetypes'), { recursive: true });
+
+    // Reprints are summed into the print they are shown as, so a window spanning a
+    // switch from SVI-173 to MEG-115 averages one Energy Switch rather than two halves.
+    // Summing `decksWith` is exact because no stored decklist runs two printings of one
+    // card: Limitless writes every list with a single print per card.
+    const shownAs = (cardId) => canon.get(cardId)?.id ?? cardId;
+    const addTo = (cards, cardId, copies, decksWith) => {
+        const id = shownAs(cardId);
+        const cur = cards.get(id);
+        if (cur) { cur.copies += copies; cur.decksWith += decksWith; }
+        else cards.set(id, { copies, decksWith });
+    };
 
     // One database pass per window rather than one per archetype: variants are summed
     // into their base here instead.
@@ -257,7 +272,7 @@ export function buildArchetypes(store, {
         for (const row of totals) {
             let cards = byDeck.get(row.deckId);
             if (!cards) { cards = new Map(); byDeck.set(row.deckId, cards); }
-            cards.set(row.cardId, { copies: row.copies, decksWith: row.decksWith });
+            addTo(cards, row.cardId, row.copies, row.decksWith);
         }
         windows.set(days, { byDeck, counts: new Map(counts.map((c) => [c.deckId, c.decks])) });
         onProgress({ type: 'window', days, decks: byDeck.size });
@@ -303,7 +318,7 @@ export function buildArchetypes(store, {
         if (!days) { days = new Map(); dailyByDeck.set(row.deckId, days); }
         let cards = days.get(row.day);
         if (!cards) { cards = new Map(); days.set(row.day, cards); }
-        cards.set(row.cardId, { copies: row.copies, decksWith: row.decksWith });
+        addTo(cards, row.cardId, row.copies, row.decksWith);
     }
     /** deckId -> day -> decklist count */
     const dailyCounts = new Map();

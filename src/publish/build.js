@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { indexKeys, shard } from './search.js';
 import { buildCards, buildArchetypes } from './build-decks.js';
+import { canonicalList, canonicalPrints } from './canonical.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -120,6 +121,10 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
     const repaired = store.repairCardIndex((p) => onProgress({ type: 'repair', ...p }));
     if (repaired > 0) onProgress({ type: 'repaired', tournaments: repaired });
 
+    // One print per card, everywhere the site shows it: card pages, archetype averages
+    // and every decklist all use the print current tournaments list.
+    const canon = canonicalPrints(store);
+
     // Wipe only the generated subtrees, so a pruned or renamed player cannot leave a
     // stale file behind that the site would still happily serve.
     for (const sub of ['players', 'decks', 'search', 'cards', 'archetypes']) {
@@ -176,7 +181,7 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
         const history = rows.map((r) => {
             // A decklist is published only if it exists and falls inside the window.
             const include = r.decklist && (!decklistCutoff || r.date >= decklistCutoff);
-            if (include) lists[r.tournamentId] = JSON.parse(r.decklist);
+            if (include) lists[r.tournamentId] = canonicalList(JSON.parse(r.decklist), canon);
             return {
                 tournamentId: r.tournamentId,
                 tournament: r.tournamentName,
@@ -253,9 +258,9 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
     // Both add their own entries to the shared search index, so this has to happen
     // before it is written out.
     const icons = (raw) => deckIcons(raw);
-    const cardsBuilt = buildCards(store, { dataDir, searchIndex, deckIcons: icons, onProgress });
+    const cardsBuilt = buildCards(store, { dataDir, searchIndex, canon, deckIcons: icons, onProgress });
     const archesBuilt = buildArchetypes(store, {
-        dataDir, searchIndex, deckIcons: icons, overrides: archetypeOverrides(), onProgress,
+        dataDir, searchIndex, canon, deckIcons: icons, overrides: archetypeOverrides(), onProgress,
     });
 
     mkdirSync(join(dataDir, 'search'), { recursive: true });
@@ -300,6 +305,7 @@ export function build(store, { outDir = 'dist', decklistMonths = null, onProgres
         searchBuckets: searchIndex.size,
         listsWritten,
         cards: cardsBuilt.cards,
+        mergedPrints: cardsBuilt.mergedPrints,
         archetypes: archesBuilt.archetypes,
         bytes: {
             players: bytesPlayers,
