@@ -368,6 +368,20 @@ export class Store {
                 ORDER BY decks DESC, c.id
             `),
 
+            /** Every card with its print group — itself, if it was never looked up. */
+            cardGroups: db.prepare(`
+                SELECT c.id, c.set_ AS setCode, c.number, c.name,
+                       COALESCE(p.group_id, c.id) AS groupId
+                FROM card c
+                LEFT JOIN card_print p ON p.card_id = c.id
+            `),
+
+            lastPlayed: db.prepare(`SELECT MAX(date) AS last FROM card_play WHERE card_id = ?`),
+
+            playsSince: db.prepare(`
+                SELECT COUNT(*) AS n FROM card_play WHERE card_id = ?1 AND date >= ?2
+            `),
+
             allPrintGroups: db.prepare(`
                 SELECT p.group_id AS groupId, p.card_id AS cardId
                 FROM card_print p JOIN card c ON c.id = p.card_id
@@ -822,6 +836,20 @@ export class Store {
 
     printsInGroup(groupId) {
         return this.stmt.printsInGroup.all(groupId);
+    }
+
+    cardGroups() {
+        return this.stmt.cardGroups.all();
+    }
+
+    /** @returns {string|null} ISO date of the newest decklist running this exact print */
+    lastPlayed(cardId) {
+        return this.stmt.lastPlayed.get(cardId)?.last ?? null;
+    }
+
+    /** Decklists running this exact print on or after `since`. */
+    playsSince(cardId, since) {
+        return this.stmt.playsSince.get(cardId, since).n;
     }
 
     printStats() {

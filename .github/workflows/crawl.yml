@@ -84,6 +84,19 @@ jobs:
             ${{ github.event.inputs.since && format('--since {0}', github.event.inputs.since) || '' }} \
             ${{ github.event.inputs.full == 'true' && '--full' || '' }}
 
+      # Groups reprints into one card (Energy Switch SVI-173 and MEG-115, say), read
+      # from each card's page on limitlesstcg.com. Cached forever in the database, so
+      # once caught up this only looks up card ids the crawl has never seen before —
+      # which is exactly how a new reprint gets joined to its older prints. Without it
+      # every printing publishes as a separate card.
+      #
+      # Allowed to fail: a slow or unreachable card site should not hold back new
+      # results, and whatever it did not finish is picked up by the next run.
+      - name: Group reprints
+        continue-on-error: true
+        run: |
+          node --disable-warning=ExperimentalWarning src/cli.js prints --max-minutes 45
+
       - name: Build static site
         run: |
           node --disable-warning=ExperimentalWarning src/cli.js build \

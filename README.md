@@ -248,6 +248,26 @@ Looking up one printing settles every other printing of that card at once. Card 
 then cover all printings together, counting a deck that runs two printings as one deck
 with the copies summed, and any printing's URL resolves to the shared page.
 
+The daily workflow runs it between the crawl and the build, so reprints stay current
+without anyone touching them: a new printing shows up in a decklist as a card id never
+seen before, gets looked up, and its page names every older print.
+
+### Which print is shown
+
+Each card appears everywhere — its page, search, archetype averages and every decklist,
+old ones included — as **the print current tournaments list**: whichever printing is most
+used across the card's last two weeks of results. Limitless writes new decklists with one
+standard print per card and moves it to a reprint some time after release, so when Energy
+Switch went from SVI-173 to MEG-115 the whole site followed on its own.
+
+"Newest set" would be the obvious rule, but it is wrong in both directions. Limitless has
+a page for a print before any event lists it (Energy Switch PBL-107), and some reprints
+are never adopted: a week of events in February listed Lillie's Determination as ASC-192,
+and every event since has gone back to MEG-119.
+
+Only the published site changes. The database keeps every decklist exactly as submitted,
+and the choice is recomputed on every build.
+
 ## Finding players who changed their name
 
 Display names on Limitless are not stable — roughly **8% of players** have used more than
@@ -303,8 +323,9 @@ crawler is deliberately rate-limited, and you should not remove those limits.
 src/
 ├── api/      errors.js · client.js (rate limiting) · limitless.js (endpoints)
 ├── db/       schema.sql · open.js · queries.js
-├── ingest/   crawl.js  (discover + fetch, both resumable)
-├── publish/  build.js (SQLite → static JSON) · search.js (shared rules) · serve.js
+├── ingest/   crawl.js  (discover + fetch, both resumable) · prints.js (reprint groups)
+├── publish/  build.js (SQLite → static JSON) · canonical.js (print shown per card)
+│             search.js (shared rules) · serve.js
 └── cli.js
 site/                          the front end, copied verbatim into dist/
 archive/tracker.js             the original prototype

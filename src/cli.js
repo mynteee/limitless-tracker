@@ -372,6 +372,7 @@ function cmdBuild() {
     console.log();
     console.log(`${r.players} players, ${r.cards} cards, ${r.archetypes} archetypes, `
         + `${r.listsWritten} decklists, ${r.searchBuckets} search buckets`);
+    console.log(`${r.mergedPrints} reprints folded into the print current tournaments list`);
     console.log(`  players/     ${mb(r.bytes.players)}`);
     console.log(`  decks/       ${mb(r.bytes.decks)}`);
     console.log(`  cards/       ${mb(r.bytes.cards)}`);
@@ -602,7 +603,8 @@ async function cmdPrints() {
         deadline,
         signal: controller.signal,
         onProgress: ({ done, total, card, prints }) => {
-            const line = `  [${String(done).padStart(5)}/${total}] ${card.padEnd(10)} ${prints} print${prints === 1 ? '' : 's'}`;
+            const found = prints ? `${prints} print${prints === 1 ? '' : 's'}` : 'unreadable, will retry';
+            const line = `  [${String(done).padStart(5)}/${total}] ${card.padEnd(10)} ${found}`;
             if (process.stdout.isTTY) process.stdout.write(`\r${line.padEnd(70)}`);
             else console.log(line);
         },
@@ -610,7 +612,8 @@ async function cmdPrints() {
     if (process.stdout.isTTY) process.stdout.write('\n');
 
     const after = store.printStats();
-    console.log(`\nLooked up ${r.done}${r.failed ? ` (${r.failed} unreadable)` : ''}.`);
+    console.log(`\nLooked up ${r.done}${r.failed ? ` (${r.failed} unreadable, retried next run)` : ''}.`);
+    if (r.gaveUp) console.log('Stopped early: limitlesstcg.com kept failing, so it is likely down or refusing requests.');
     console.log(`${after.looked_up.toLocaleString()} of ${after.cards.toLocaleString()} `
         + `printings resolved, into ${after.groups.toLocaleString()} distinct cards.`);
     const left = store.cardsWithoutPrints(-1).length;
