@@ -279,12 +279,68 @@ function showDecklist(box, list) {
             <span class="muted" style="font-size:.8rem">${countOf(
                 GROUPS.flatMap(([k]) => list[k] ?? []),
             )} cards</span>
+            <button type="button" class="dl-copy" title="Copy in the format Pokémon TCG Live imports">Copy for PTCGL</button>
           </div>
           ${mode === 'list' ? renderList(list) : renderCards(list)}`;
-        box.querySelectorAll('.dl-tools button').forEach((b) =>
+        box.querySelectorAll('.dl-tools [data-mode]').forEach((b) =>
             b.addEventListener('click', () => draw(b.dataset.mode)));
+        box.querySelector('.dl-copy').addEventListener('click', (e) => copyDecklist(e.currentTarget, box, list));
     };
     draw('list');
+}
+
+/* ── PTCGL export ─────────────────────────────────────────────────────────── */
+
+/**
+ * Limitless and PTCGL share set codes with one exception in this corpus: Scarlet &
+ * Violet promos are SVP on Limitless and PR-SV in the game. MEP, PK and every
+ * expansion pass through unchanged, which is exactly what Limitless' own "Copy to
+ * Clipboard" does.
+ */
+const PTCGL_SETS = { SVP: 'PR-SV' };
+
+/** A decklist as the text PTCGL's import box takes, laid out like Limitless' own export. */
+function ptcglText(list) {
+    return GROUPS.map(([key, label]) => {
+        const cards = list[key] ?? [];
+        if (!cards.length) return '';
+        return [
+            `${label}: ${countOf(cards)}`,
+            ...cards.map((c) => `${c.count} ${c.name} ${PTCGL_SETS[c.set] ?? c.set} ${c.number}`),
+        ].join('\n');
+    }).filter(Boolean).join('\n\n');
+}
+
+/**
+ * Put the list on the clipboard. Where the async API is refused — an embedded frame, a
+ * dismissed permission prompt — the older selection copy usually still works; where
+ * even that fails, the text stays on screen selected, one Ctrl+C away rather than lost.
+ */
+async function copyDecklist(btn, box, list) {
+    const text = ptcglText(list);
+    box.querySelector('.dl-export')?.remove();
+
+    let copied = await navigator.clipboard?.writeText(text).then(() => true, () => false);
+    if (!copied) {
+        box.querySelector('.dl-tools').insertAdjacentHTML('afterend',
+            `<textarea class="dl-export" readonly rows="8" aria-label="Decklist for PTCGL">${esc(text)}</textarea>`);
+        const area = box.querySelector('.dl-export');
+        area.select();
+        copied = document.execCommand('copy');
+        if (!copied) {
+            btn.textContent = 'Press Ctrl+C';
+            return;
+        }
+        area.remove();
+        btn.focus();
+    }
+    btn.textContent = 'Copied!';
+    btn.classList.add('done');
+    clearTimeout(btn.resetTimer);
+    btn.resetTimer = setTimeout(() => {
+        btn.textContent = 'Copy for PTCGL';
+        btn.classList.remove('done');
+    }, 1500);
 }
 
 /**
