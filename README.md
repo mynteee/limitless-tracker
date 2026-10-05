@@ -23,7 +23,10 @@ kept apart so 133 archetypes and 2,160 card names cannot bury the person you cam
 
 **Players** — search by handle (`awsomeguy1975`), display name (`Mark Miller`), or a name
 someone used months ago; renames never hide a player. Click any event to expand the
-decklist: **List** shows it in Limitless' own format, **Cards** shows the actual card art.
+decklist: **List** shows it in Limitless' own format, **Cards** shows the actual card art,
+and **Copy for PTCGL** puts it on the clipboard ready to paste into Pokémon TCG Live's
+import box. The button is on every decklist the site opens, on card and archetype pages
+too.
 
 **Decks** — every archetype is at `#/decks`, with a filter box, a date window, and a
 **Split variants** toggle that flattens the list to one row per variant ranked across all

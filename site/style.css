@@ -227,6 +227,23 @@ main { max-width: 60rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
   border-color: var(--accent);
   color: var(--accent);
 }
+.dl-tools .dl-copy { margin-left: auto; }
+.dl-tools .dl-copy:hover { border-color: var(--accent); color: var(--accent); }
+.dl-tools .dl-copy.done { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+/* Shown only when the browser blocks clipboard access, pre-selected for Ctrl+C. */
+.dl-export {
+  display: block;
+  width: 100%;
+  margin: 0 0 .9rem;
+  padding: .5rem .6rem;
+  font: .8rem/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  resize: vertical;
+}
 
 /* Text view: three columns, the way Limitless lays a decklist out. */
 .dl-columns {
