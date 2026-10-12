@@ -513,3 +513,49 @@ a.crow:hover { background: var(--accent-soft); }
   color: inherit; background: transparent;
   border: 1px solid var(--line, rgba(127,127,127,.35)); border-radius: 5px;
 }
+
+/* ── find-by-cards slots ──────────────────────────────────────────────────── */
+
+.slots { display: grid; gap: .5rem; margin: 1rem 0; }
+
+.slot {
+  display: grid;
+  grid-template-columns: 7rem 4.5rem minmax(0, 1fr) auto;
+  gap: .5rem;
+  align-items: center;
+}
+
+.slot select, .slot input, .slot button {
+  font: inherit; font-size: .875rem; color: inherit; background: transparent;
+  border: 1px solid var(--line); border-radius: 5px; padding: .3rem .4rem;
+}
+.slot button { cursor: pointer; }
+.slot button:hover:not(:disabled) { background: var(--accent-soft); }
+.slot button:disabled { opacity: .45; cursor: default; }
+
+/* The picker and its dropdown share this box, so the list hangs off the input. */
+.slot-card { position: relative; min-width: 0; }
+.slot-q { width: 100%; }
+
+.slot-pick { display: flex; align-items: center; gap: .4rem; min-width: 0; }
+.slot-pick .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot-pick .slot-clear { font-size: .8125rem; }
+
+.slot-hits {
+  position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 2px);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  max-height: 16rem; overflow: auto;
+}
+
+.slot-hit {
+  display: flex; align-items: center; gap: .4rem; width: 100%;
+  border: 0; border-radius: 0; text-align: left; padding: .35rem .5rem;
+}
+.slot-hit:hover { background: var(--accent-soft); }
+.slot-hit .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot-hit .spacer { flex: 1; }
+
+@media (max-width: 640px) {
+  .slot { grid-template-columns: 1fr 4.5rem auto; }
+  .slot-card { grid-column: 1 / -1; order: 1; }
+}
