@@ -1,4 +1,4 @@
-import { matchesEntry, shard } from './search.js';
+import { entryTerms, matchesEntry, shard } from './search.js';
 
 /* ── data sources ─────────────────────────────────────────────────────────── */
 
@@ -126,9 +126,7 @@ function readRangeForm(form) {
  * word somewhere in the middle.
  */
 function relevance(entry, term) {
-    const names = [entry.handle, ...(entry.names ?? [entry.name])]
-        .filter(Boolean)
-        .map((n) => String(n).toLowerCase());
+    const names = entryTerms(entry);
 
     let score = 0;
     if (names.some((n) => n === term)) score += 100;
@@ -447,17 +445,27 @@ function cardResultRows(rows) {
       </div>`).join('');
 }
 
-async function renderCard(id) {
-    view.innerHTML = `<p class="empty">Loading…</p>`;
+/**
+ * A card page, following the reprint stub to whichever printing holds the data.
+ *
+ * Reprints share one page and every other printing is published as a stub pointing at
+ * it, so an old link or a typed set code still lands on the card rather than a 404.
+ * Returns the id the data actually lives under, which is not always the one asked for.
+ */
+async function loadCardPage(id) {
     const load = (cid) =>
         getJson(`data/cards/${shard(cid.toLowerCase())}/${encodeURIComponent(cid)}.json`);
 
-    let card = await load(id);
-    // Reprints share one page. Any other printing is published as a stub pointing at it,
-    // so an old link or a typed set code still lands on the card rather than a 404.
-    if (card?.alias) {
-        window.history.replaceState(null, '', `#/c/${encodeURIComponent(card.alias)}`);
-        card = await load(card.alias);
+    const first = await load(id);
+    if (!first?.alias) return { card: first, id };
+    return { card: await load(first.alias), id: first.alias };
+}
+
+async function renderCard(id) {
+    view.innerHTML = `<p class="empty">Loading…</p>`;
+    const { card, id: shownAs } = await loadCardPage(id);
+    if (shownAs !== id) {
+        window.history.replaceState(null, '', `#/c/${encodeURIComponent(shownAs)}`);
     }
     if (!card) {
         view.innerHTML = `<p class="empty">No card <b>${esc(id)}</b> in this dataset.</p>`;
@@ -816,15 +824,30 @@ async function renderArchetype(id, preselectVariant = null) {
 }
 
 /**
- * Card search, on its own page with its own box.
+ * Cards matching a typed term, best match first.
  *
- * Reads the same published buckets as the main search, filtered to cards, so nothing
- * extra is published for it.
+ * Reads the same published buckets as the player search, filtered to cards, so nothing
+ * extra is published for it. Shared with the slot pickers on the find page, which need
+ * the identical resolution — a typed name or set code to the page that holds the data.
+ */
+async function searchCards(term, limit) {
+    const t = String(term).trim().toLowerCase();
+    if (t.length < 2) return [];
+    const bucket = await getJson(`data/search/${shard(t)}.json`);
+    return (bucket ?? [])
+        .filter((e) => e.type === 'card' && matchesEntry(e, t))
+        .sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events)
+        .slice(0, limit);
+}
+
+/**
+ * Card search, on its own page with its own box.
  */
 async function renderCardSearch(initial = '') {
     view.innerHTML = `
       <h1 class="page-title">Cards</h1>
-      <p class="muted">Search any card to see the decklists that ran it.</p>
+      <p class="muted">Search any card to see the decklists that ran it, or
+        <a href="#/find">find decks by several cards at once →</a></p>
       <form id="card-form" class="inline-search" role="search">
         <input id="cq" type="search" placeholder="Card name or set code, e.g. MEG-114…"
                aria-label="Search cards" spellcheck="false" value="${esc(initial)}">
@@ -840,11 +863,7 @@ async function renderCardSearch(initial = '') {
             box.innerHTML = `<p class="empty">Type at least two characters.</p>`;
             return;
         }
-        const bucket = await getJson(`data/search/${shard(t)}.json`);
-        const hits = (bucket ?? [])
-            .filter((e) => e.type === 'card' && matchesEntry(e, t))
-            .sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events)
-            .slice(0, 80);
+        const hits = await searchCards(t, 80);
 
         box.innerHTML = hits.length === 0
             ? `<p class="empty">No cards matching “${esc(term)}”.</p>`
@@ -998,6 +1017,463 @@ async function renderArchetypeList() {
     dq.focus();
 }
 
+/* ── find decklists by card counts ────────────────────────────────────────── */
+
+/**
+ * Decklists that run a set of cards in given numbers.
+ *
+ * Nothing new is published for this. A card's page plus the packed history pages beside
+ * it are already its complete posting list — every (event, player) that ran it, with
+ * how many copies — which is exactly what "exactly 4 of this and at least 2 of that"
+ * needs. There is no query engine behind a static site, so the conjunction runs here.
+ *
+ * All the cost is in which lists get fetched, and it swings by three orders of
+ * magnitude: the median card has 22 results while a staple has ~98,000. A conjunction
+ * can never be larger than its smallest term, so the slot with the fewest decklists
+ * proposes the candidates and the rest only have to settle those — see `planFind`.
+ */
+
+/**
+ * Comparisons a slot can make.
+ *
+ * `leads` marks the ones that can propose candidates. A deck running none of a card is
+ * absent from its posting list altogether, so "at most n" and "exactly 0" are satisfied
+ * by decks no list can name — they can only narrow candidates some other slot proposed.
+ */
+const FIND_OPS = {
+    '=': { label: 'exactly', test: (copies, n) => copies === n, leads: (n) => n > 0 },
+    '>=': { label: 'at least', test: (copies, n) => copies >= n, leads: (n) => n > 0 },
+    '<=': { label: 'at most', test: (copies, n) => copies <= n, leads: () => false },
+};
+
+/** Short forms, so a query survives a round trip through the URL. */
+const FIND_CODE = { '=': '=', '>=': '>', '<=': '<' };
+const FIND_OP = { '=': '=', '>': '>=', '<': '<=' };
+
+/**
+ * What the two ways of settling a slot cost, measured on the published corpus: a packed
+ * history row is about 30 bytes, and a player's decklist file averages 4.6 KB.
+ */
+const BYTES_PER_POSTING = 30;
+const BYTES_PER_DECKLIST = 4_600;
+
+/** Past this the page asks before spending someone's bandwidth on a query. */
+const FIND_BUDGET = 8 * 1024 * 1024;
+
+/**
+ * Matches drawn before the rest go behind a button.
+ *
+ * A query loose enough to match tens of thousands of decklists still answers, but
+ * putting them all in the document at once does not: 30,000 rows measured at 15s to
+ * render and left every click three seconds behind. A selective query — which is what
+ * this page is for — never reaches this.
+ */
+const FIND_FIRST_ROWS = 500;
+
+/** A query that cannot be run as asked, with a message worth showing. */
+class FindError extends Error {}
+
+/** Identity of one decklist: the event it was played at and who brought it. */
+const postingKey = (tournamentId, handle) => `${tournamentId}\u0000${handle}`;
+
+const mb = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+
+/** Every printing that counts towards a slot, the way a card page counts reprints. */
+const printIdCache = new WeakMap();
+function printIdsOf(card) {
+    let ids = printIdCache.get(card);
+    if (!ids) {
+        ids = new Set((card.prints ?? [{ id: card.id }]).map((p) => p.id.toUpperCase()));
+        printIdCache.set(card, ids);
+    }
+    return ids;
+}
+
+/** Walk a card's packed history pages, newest first. */
+async function eachHistoryPage(card, visit, report = () => {}) {
+    if (!card.historyPages) return;
+    const dicts = await historyDicts();
+    for (let p = 0; p < card.historyPages; p++) {
+        if (card.historyPages > 1) {
+            report(`Loading ${card.name} — page ${p + 1} of ${card.historyPages}…`);
+        }
+        const page = await getJson(
+            `data/cards/${shard(card.id.toLowerCase())}/${encodeURIComponent(card.id)}.h${p}.json`);
+        if (!page) throw new FindError(`Could not load the full history of ${card.name}.`);
+        visit(page, dicts);
+    }
+}
+
+/**
+ * How many copies each decklist ran, for a slot that only has to settle candidates.
+ *
+ * Reads the packed rows without unpacking them into result rows: a staple is ~98,000 of
+ * them and nothing here needs the placing or the deck.
+ */
+async function cardCopies(card, report) {
+    const copies = new Map();
+    for (const r of card.results) copies.set(postingKey(r.tournamentId, r.handle), r.count);
+    await eachHistoryPage(card, (page, dicts) => {
+        for (const [ti, , handle, , count] of page) {
+            copies.set(postingKey(dicts.tournaments[ti]?.[0] ?? '', handle), count);
+        }
+    }, report);
+    return copies;
+}
+
+/** The same list as renderable rows. Only the slot proposing candidates needs these. */
+async function cardRows(card, report) {
+    const rows = card.results.map((r) => ({ ...r, key: postingKey(r.tournamentId, r.handle) }));
+    await eachHistoryPage(card, (page, dicts) => {
+        for (const packed of page) {
+            const r = unpackRow(packed, dicts);
+            rows.push({ ...r, key: postingKey(r.tournamentId, r.handle) });
+        }
+    }, report);
+    return rows;
+}
+
+/** Copies of one slot's card in a stored decklist, summed across its printings. */
+function copiesInList(list, printIds) {
+    let total = 0;
+    for (const [group] of GROUPS) {
+        for (const c of list[group] ?? []) {
+            if (printIds.has(`${c.set}-${c.number}`.toUpperCase())) total += c.count;
+        }
+    }
+    return total;
+}
+
+/** Oldest day whose decklists are published, or null when all of them are. */
+function decklistFloor() {
+    const months = meta?.decklistWindowMonths;
+    return months ? isoDay(Date.now() - months * 30 * dayMs) : null;
+}
+
+/**
+ * Run several fetches at a time.
+ *
+ * Hundreds of requests in series is minutes of waiting; all at once is rude to the host
+ * and no faster once the connection is saturated.
+ */
+async function fetchPool(keys, load, width = 8) {
+    const out = new Map();
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(width, keys.length) }, async () => {
+        while (next < keys.length) {
+            const key = keys[next++];
+            out.set(key, await load(key));
+        }
+    }));
+    return out;
+}
+
+/**
+ * Find every decklist satisfying all the slots, fetching as little as it can.
+ *
+ * @param {object[]} terms slots, each with its resolved card page attached
+ * @param {(msg: string) => void} report progress, shown while the query runs
+ * @param {(bytes: number) => Promise<boolean>} confirm asked before a costly query
+ */
+async function planFind(terms, report, confirm) {
+    const leads = terms.filter((t) => FIND_OPS[t.op].leads(t.n));
+    if (!leads.length) {
+        throw new FindError('At least one card has to be one the deck must contain. '
+            + '“At most” also matches decks that do not run the card at all, so on its own '
+            + 'it has nothing to search.');
+    }
+
+    // Fewest decklists first. The answer can be no larger than this slot, and every
+    // other one then only has to settle the candidates it proposes.
+    const lead = leads.reduce((a, b) => (b.card.decks < a.card.decks ? b : a));
+    const rest = terms.filter((t) => t !== lead);
+
+    // Two ways to settle the rest, and the gap between them is what makes this
+    // practical. Posting lists cost whatever their cards are played — a staple is
+    // ~2.9 MB. Decklists cost whatever the candidates are, and one file answers every
+    // remaining slot at once however many cards the query names.
+    const listBytes = rest.reduce((a, t) => a + t.card.decks * BYTES_PER_POSTING, 0);
+    const leadBytes = lead.card.decks * BYTES_PER_POSTING;
+    // Only promise the cheaper route where it is certain to be available: with a
+    // decklist window set it may turn out that the candidates fall outside it, and an
+    // estimate that quietly assumed otherwise would be the one that spent the 2.9 MB.
+    const worstCase = leadBytes + (decklistFloor()
+        ? listBytes
+        : Math.min(listBytes, lead.card.decks * BYTES_PER_DECKLIST));
+    if (worstCase > FIND_BUDGET && !(await confirm(worstCase))) return null;
+
+    report(`Loading ${lead.card.name}…`);
+    const candidates = (await cardRows(lead.card, report))
+        .filter((r) => FIND_OPS[lead.op].test(r.count, lead.n));
+    if (!candidates.length) return { lead, matches: [], unverified: 0, via: 'lead' };
+    // One slot is already its own answer: its posting list is the result.
+    if (!rest.length) {
+        return {
+            lead,
+            matches: candidates.map((r) => ({ ...r, counts: [r.count] })),
+            unverified: 0,
+            via: 'lead',
+        };
+    }
+
+    // A decklist is published only if it falls inside the window the build was given,
+    // so candidates older than that cannot be settled from one.
+    const floor = decklistFloor();
+    const players = [...new Set(candidates.map((r) => r.handle))];
+    const deckBytes = players.length * BYTES_PER_DECKLIST;
+    const viaDecklists = (!floor || candidates.every((r) => r.date >= floor))
+        && deckBytes <= listBytes;
+
+    const matches = [];
+    let unverified = 0;
+
+    if (viaDecklists) {
+        report(`Checking ${players.length.toLocaleString()} decklists…`);
+        const lists = await fetchPool(players, (handle) =>
+            getJson(`data/decks/${shard(handle)}/${encodeURIComponent(handle)}.json`));
+
+        for (const r of candidates) {
+            const list = lists.get(r.handle)?.lists?.[r.tournamentId];
+            // No published list means no way to settle the other slots, and a match
+            // cannot be claimed on a guess.
+            if (!list) { unverified++; continue; }
+            const counts = terms.map((t) =>
+                t === lead ? r.count : copiesInList(list, printIdsOf(t.card)));
+            if (terms.every((t, i) => FIND_OPS[t.op].test(counts[i], t.n))) {
+                matches.push({ ...r, counts });
+            }
+        }
+    } else {
+        const copiesFor = new Map();
+        for (const t of rest) {
+            report(`Loading ${t.card.name}…`);
+            copiesFor.set(t, await cardCopies(t.card, report));
+        }
+        for (const r of candidates) {
+            const counts = terms.map((t) =>
+                t === lead ? r.count : (copiesFor.get(t).get(r.key) ?? 0));
+            if (terms.every((t, i) => FIND_OPS[t.op].test(counts[i], t.n))) {
+                matches.push({ ...r, counts });
+            }
+        }
+    }
+
+    return { lead, matches, unverified, via: viaDecklists ? 'decklists' : 'postings' };
+}
+
+/**
+ * Matching decklists, grouped under the event they were played at.
+ *
+ * `labelled` carries the last event named, so drawing the remainder of a long result
+ * picks up mid-event rather than repeating its header.
+ */
+function findResultRows(matches, labelled = null) {
+    return matches.map((r) => {
+        // Label each event once, as the list walks back through them.
+        const header = r.tournamentId === labelled ? '' :
+            `<div class="crow sub"><span></span><span class="ev">${esc(r.tournament)}</span>
+             <span class="muted">${esc(r.date)}</span><span></span></div>`;
+        labelled = r.tournamentId;
+        return header + `<div class="crow" role="button" tabindex="0" aria-expanded="false"
+            data-handle="${esc(r.handle)}" data-tid="${esc(r.tournamentId)}">
+            <span class="place">${r.placing === null ? '—' : ordinal(r.placing)}${
+                r.fieldSize ? `<span class="of">/${r.fieldSize}</span>` : ''}</span>
+            <span class="deck">${deckIcons(r.deck)}<span>${esc(r.deck?.name ?? 'Other')}</span></span>
+            <a class="who" href="#/p/${encodeURIComponent(r.handle)}">${esc(r.name)}</a>
+            <span class="qty-inline">${r.counts.join(' · ')}</span>
+          </div>`;
+    }).join('');
+}
+
+/** A slot as it appears in the URL, e.g. `MEG-114=4`. */
+const findToQuery = (slots) => slots
+    .filter((s) => s.cardId)
+    .map((s) => `${s.cardId}${FIND_CODE[s.op]}${s.n}`)
+    .join(',');
+
+function findFromQuery(q) {
+    return String(q ?? '').split(',').map((part) => {
+        const m = part.match(/^([A-Za-z0-9-]+?)([=><])(\d+)$/);
+        if (!m) return null;
+        return { cardId: m[1].toUpperCase(), name: m[1].toUpperCase(), op: FIND_OP[m[2]], n: Number(m[3]), q: '' };
+    }).filter(Boolean);
+}
+
+const newFindSlot = () => ({ cardId: null, name: '', op: '=', n: 4, q: '' });
+
+async function renderFind(initial = []) {
+    const slots = initial.length ? initial : [newFindSlot(), newFindSlot()];
+    let running = false;
+
+    view.innerHTML = `
+      <h1 class="page-title">Find decklists</h1>
+      <p class="muted">Decklists that run a set of cards in the numbers you choose —
+        “exactly 4 Lillie's Determination, exactly 1 Mist Energy, at least 2 Boss's Orders”.</p>
+      <div class="slots" id="find-slots"></div>
+      <div class="chips">
+        <button class="chip" id="find-add">Add a card</button>
+        <button class="chip on" id="find-run">Search</button>
+      </div>
+      <p class="muted note" id="find-status"></p>
+      <div id="find-results"></div>`;
+
+    const slotBox = document.getElementById('find-slots');
+    const status = document.getElementById('find-status');
+    const results = document.getElementById('find-results');
+    const say = (msg) => { status.textContent = msg; };
+
+    const drawSlots = () => {
+        slotBox.innerHTML = slots.map((s, i) => `
+          <div class="slot" data-i="${i}">
+            <select class="slot-op" aria-label="How many copies">
+              ${Object.entries(FIND_OPS).map(([op, o]) =>
+                `<option value="${op}" ${s.op === op && !(s.op === '=' && s.n === 0) ? 'selected' : ''}>${o.label}</option>`).join('')}
+              <option value="none" ${s.op === '=' && s.n === 0 ? 'selected' : ''}>none</option>
+            </select>
+            <input class="slot-n" type="number" min="0" max="60" value="${s.n}"
+                   aria-label="Copies" ${s.op === '=' && s.n === 0 ? 'hidden' : ''}>
+            <div class="slot-card">
+              ${s.cardId
+                ? `<div class="slot-pick">
+                     <img class="mini-card" src="${esc(cardImage(...s.cardId.split('-')))}" alt="" loading="lazy">
+                     <span class="nm">${esc(s.name)}</span>
+                     <span class="muted">${esc(s.cardId)}</span>
+                     <button class="slot-clear" type="button" aria-label="Change card">change</button>
+                   </div>`
+                : `<input class="slot-q" type="search" placeholder="Card name or set code…"
+                          aria-label="Card" spellcheck="false" value="${esc(s.q)}">
+                   <div class="slot-hits" hidden></div>`}
+            </div>
+            <button class="slot-del" type="button" ${slots.length === 1 ? 'disabled' : ''}>Remove</button>
+          </div>`).join('');
+
+        slotBox.querySelectorAll('.slot').forEach((el) => {
+            const i = Number(el.dataset.i);
+            const s = slots[i];
+
+            el.querySelector('.slot-op').addEventListener('change', (e) => {
+                if (e.target.value === 'none') { s.op = '='; s.n = 0; } else { s.op = e.target.value; if (s.n === 0) s.n = 4; }
+                drawSlots();
+            });
+            el.querySelector('.slot-n')?.addEventListener('input', (e) => {
+                s.n = Math.max(0, Math.min(60, Number(e.target.value) || 0));
+            });
+            el.querySelector('.slot-del').addEventListener('click', () => {
+                slots.splice(i, 1);
+                drawSlots();
+            });
+            el.querySelector('.slot-clear')?.addEventListener('click', () => {
+                s.cardId = null; s.name = ''; s.q = '';
+                drawSlots();
+            });
+
+            const q = el.querySelector('.slot-q');
+            const hits = el.querySelector('.slot-hits');
+            if (!q) return;
+
+            let t;
+            const show = async () => {
+                s.q = q.value;
+                const found = await searchCards(q.value, 8);
+                if (!found.length) { hits.hidden = true; return; }
+                hits.hidden = false;
+                hits.innerHTML = found.map((e) => `
+                  <button class="slot-hit" type="button" data-id="${esc(e.handle)}" data-name="${esc(e.name)}">
+                    <img class="mini-card" src="${esc(cardImage(...e.handle.split('-')))}" alt="" loading="lazy">
+                    <span class="nm">${esc(e.name)}</span>
+                    <span class="muted">${esc(e.handle)}</span>
+                    <span class="spacer"></span>
+                    <span class="muted">${e.events.toLocaleString()}</span>
+                  </button>`).join('');
+                hits.querySelectorAll('.slot-hit').forEach((b) =>
+                    b.addEventListener('click', () => {
+                        s.cardId = b.dataset.id;
+                        s.name = b.dataset.name;
+                        drawSlots();
+                    }));
+            };
+            q.addEventListener('input', () => { clearTimeout(t); t = setTimeout(show, 120); });
+            if (s.q) show();
+        });
+    };
+
+    const run = async () => {
+        if (running) return;
+        const chosen = slots.filter((s) => s.cardId);
+        if (!chosen.length) { say('Pick at least one card.'); return; }
+
+        running = true;
+        results.innerHTML = '';
+        say('Resolving cards…');
+        // Keeps the query in the URL, so a search can be linked and reloaded.
+        window.history.replaceState(null, '', `#/find?s=${findToQuery(chosen)}`);
+
+        try {
+            const pages = await Promise.all(chosen.map((s) => loadCardPage(s.cardId)));
+            const terms = chosen.map((s, i) => ({ ...s, card: pages[i].card }));
+            const absent = terms.find((t) => !t.card);
+            if (absent) throw new FindError(`No card ${absent.cardId} in this dataset.`);
+            // A query arriving by URL knows only ids, so label the slots properly now.
+            let renamed = false;
+            terms.forEach((t) => {
+                const slot = slots.find((s) => s.cardId === t.cardId);
+                if (slot && slot.name !== t.card.name) { slot.name = t.card.name; renamed = true; }
+                t.name = t.card.name;
+            });
+            if (renamed) drawSlots();
+
+            const out = await planFind(terms, say, async (bytes) =>
+                window.confirm(`Nothing in this query is rare, so settling it needs about `
+                    + `${mb(bytes)} of card history. Search anyway?`));
+            if (!out) { say('Search cancelled.'); return; }
+
+            const { matches, unverified, via } = out;
+            const legend = terms.map((t) => `${FIND_OPS[t.op].label} ${t.n} ${t.name}`).join(' · ');
+            const SETTLED = { postings: 'from card history', decklists: 'from decklists' };
+            say(`${matches.length.toLocaleString()} decklist${matches.length === 1 ? '' : 's'}`
+                + ` — ${legend}`
+                + (unverified ? ` · ${unverified.toLocaleString()} skipped, decklist not published` : '')
+                + (SETTLED[via] ? ` · settled ${SETTLED[via]}` : ''));
+
+            const first = matches.slice(0, FIND_FIRST_ROWS);
+            results.innerHTML = matches.length === 0
+                ? `<p class="empty">No decklist runs all of those together.</p>`
+                : `<div class="ctable" id="find-rows">
+                     <div class="crow head"><span>Place</span><span>Deck</span><span>Player</span>
+                       <span>${terms.map((t) => esc(t.cardId)).join(' · ')}</span></div>
+                     ${findResultRows(first)}
+                   </div>
+                   ${matches.length > first.length
+                     ? `<button class="more" id="find-all">Show the other ${
+                         (matches.length - first.length).toLocaleString()}</button>` : ''}`;
+            wireRows(results);
+
+            document.getElementById('find-all')?.addEventListener('click', (e) => {
+                e.target.disabled = true;
+                e.target.textContent = 'Drawing…';
+                const box = document.getElementById('find-rows');
+                box.insertAdjacentHTML('beforeend',
+                    findResultRows(matches.slice(first.length), first.at(-1).tournamentId));
+                wireRows(box);
+                e.target.remove();
+            });
+        } catch (err) {
+            if (!(err instanceof FindError)) throw err;
+            say(err.message);
+        } finally {
+            running = false;
+        }
+    };
+
+    drawSlots();
+    document.getElementById('find-add').addEventListener('click', () => {
+        slots.push(newFindSlot());
+        drawSlots();
+    });
+    document.getElementById('find-run').addEventListener('click', run);
+    if (initial.length) run();
+}
+
 /* ── routing ──────────────────────────────────────────────────────────────── */
 
 function route() {
@@ -1006,6 +1482,7 @@ function route() {
     const card = hash.match(/^\/c\/(.+)$/);
     const deck = hash.match(/^\/d\/(.+)$/);
     const cardSearch = hash === '/cards';
+    const find = hash.match(/^\/find(?:\?s=(.*))?$/);
     if (player) {
         input.value = '';
         renderPlayer(decodeURIComponent(player[1]));
@@ -1023,6 +1500,9 @@ function route() {
     } else if (cardSearch) {
         input.value = '';
         renderCardSearch();
+    } else if (find) {
+        input.value = '';
+        renderFind(findFromQuery(find[1] ? decodeURIComponent(find[1]) : ''));
     } else if (input.value.trim()) {
         runSearch(input.value);
     } else {
@@ -1043,7 +1523,8 @@ function renderHome() {
         ${c.cards ? `<span><b>${c.cards.toLocaleString()}</b> cards</span>` : ''}
       </div>` : ''}
       <p class="browse"><a href="#/decks">Browse all archetypes →</a>
-        <a href="#/cards">Search cards →</a></p>
+        <a href="#/cards">Search cards →</a>
+        <a href="#/find">Find decks by cards →</a></p>
     </div>`;
 }
 

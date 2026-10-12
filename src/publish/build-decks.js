@@ -228,7 +228,9 @@ export function buildCards(store, { dataDir, searchIndex, canon, deckIcons, onPr
             handle: primary.id, name: primary.name, type: 'card',
             events: decks, last: rows[0].date.slice(0, 10),
         };
-        if (prints.length > 1) entry.prints = prints.length;
+        // The other printings this page answers for, so a query naming one of them
+        // matches the entry it was deliberately indexed under.
+        if (prints.length > 1) entry.prints = ids.filter((pid) => pid !== primary.id);
         // Findable by name and by ANY of its printing codes, all pointing at one page.
         for (const key of indexKeys(primary.id.toLowerCase(), [primary.name, ...ids])) {
             if (!searchIndex.has(key)) searchIndex.set(key, []);

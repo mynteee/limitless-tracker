@@ -36,11 +36,25 @@ all time, or a **Custom…** range given either as "last N days" or as explicit 
 dates. Every variant has its own average however few decks it has, with the sample size
 shown rather than being silently replaced.
 
-**Cards** — search them at `#/cards`. A card page lists the decklists that ran it at its
-newest event, sorted by placing, with the rest of its **complete** history behind a
-toggle — every earlier event, labelled, and nothing truncated however common the card.
-Clicking a row opens that decklist in place. Reprints share one page — see
-[Reprints](#reprints).
+**Cards** — search them at `#/cards`, by name or by any set code (`MEG-114`), including a
+reprint's. A card page lists the decklists that ran it at its newest event, sorted by
+placing, with the rest of its **complete** history behind a toggle — every earlier event,
+labelled, and nothing truncated however common the card. Clicking a row opens that
+decklist in place. Reprints share one page — see [Reprints](#reprints).
+
+**Find decklists** — `#/find` answers the question a single card page cannot: which
+decklists ran *several* cards together, in given numbers. Add a slot per card and pick
+**exactly**, **at least**, **at most** or **none** — "exactly 4 Lillie's Determination,
+exactly 1 Mist Energy, at least 2 Boss's Orders". Results list every matching decklist
+under the event it was played at, with the copies of each card you named, and a row opens
+its list in place like anywhere else. Counts are per card, not per printing: four copies
+split across two prints of the same card is still four. The query lives in the URL, so a
+search can be linked or bookmarked.
+
+A slot that can only ever *exclude* — **none**, or **at most**, both of which match decks
+that do not run the card at all — cannot be the whole query, so at least one slot has to
+name a card the deck must contain. How that works, and why it is possible without a
+server, is under [Finding decklists by card counts](#finding-decklists-by-card-counts).
 
 ---
 
@@ -409,6 +423,39 @@ Only the largest events are bounded on the page itself, at 500 rows: a staple at
 before anything rendered. Past that the event simply continues into the history, and the
 page says so. Most cards never page at all — the median card has 22 results — and a card
 whose whole history is its newest event ships no sidecar pages.
+
+### Finding decklists by card counts
+
+`#/find` is a conjunctive query — "4 of this *and* 1 of that *and* 2 of the other" — run
+in the browser, because a static site has no engine to run it in. It publishes nothing
+new: a card's page plus its packed history already are its complete posting list, every
+(event, player) that ran it together with how many copies, which is exactly what the
+question needs.
+
+The whole cost is in which lists get fetched, and card frequency spans three orders of
+magnitude — the median card has 22 results, Boss's Orders has 97,983. A conjunction can
+never be larger than its smallest term, so the slot with the fewest decklists is fetched
+first and proposes the candidates; every other slot only has to settle those. Pick one
+genuinely selective card and the query is cheap however common the rest are.
+
+Settling the remaining slots goes one of two ways, whichever is estimated smaller:
+
+| | costs | better when |
+|---|---|---|
+| the other cards' posting lists | ~30 B per decklist that ran them | the other cards are uncommon too |
+| the candidates' own decklists | ~4.6 KB per candidate player | one of them is a staple |
+
+A decklist file holds every list that player has, so it answers all the remaining slots at
+once however many cards the query names, and one fetch covers a player who turns up as
+several candidates. It is only usable where the lists were published, though — a build run
+with `--decklist-months` omits older ones — so the planner checks the candidates' dates
+against that window first and falls back to posting lists when any fall outside it. The
+status line says which route answered.
+
+A query naming nothing selective still works, but it has to read a staple's whole history,
+so the page says what that will cost and asks first. Results are drawn 500 at a time: a
+loose query can match tens of thousands of decklists, and putting all of them in the
+document at once measured at 15 seconds with every click three seconds behind.
 
 ### Published data layout
 

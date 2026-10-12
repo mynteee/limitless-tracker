@@ -49,19 +49,36 @@ export function indexKeys(handle, names = []) {
 }
 
 /**
+ * Everything an index entry can be matched on, lowercased.
+ *
+ * This has to cover the same strings `indexKeys` was given, or an entry lands in the
+ * bucket for what was typed and is then filtered straight back out of it. For a player
+ * that is the handle and every display name they have used — a player who has changed
+ * name is still found by an old one, which is the whole point of keying identity on the
+ * handle. For a card it also covers the other printings, because one page answers for
+ * all of them.
+ */
+export function entryTerms(entry) {
+    return [
+        entry.handle,
+        // `names` is present only for players who have used more than one; `name` always is.
+        ...(entry.names ?? [entry.name]),
+        // Cards only: the printings that resolve to this same page.
+        ...(entry.prints ?? []),
+    ].filter(Boolean).map((n) => String(n).toLowerCase());
+}
+
+/**
  * Does an index entry match what was typed?
  *
- * Matches the handle and every name the player has used — not just the current one.
- * A player who has changed display name is still found by an old one, which is the
- * whole point of keying identity on the handle.
+ * Case-folded on both sides. A card id is published upper-case while a query is
+ * lowered before it gets here, so comparing them raw silently matched nothing —
+ * which took out every search by set code, the card box's own example included.
  */
 export function matchesEntry(entry, term) {
     const t = String(term).toLowerCase().trim();
     if (!t) return false;
-    if (entry.handle.includes(t)) return true;
-    // `names` is present only for players who have used more than one; `name` always is.
-    const names = entry.names ?? [entry.name];
-    return names.some((n) => String(n).toLowerCase().includes(t));
+    return entryTerms(entry).some((n) => n.includes(t));
 }
 
 /**
