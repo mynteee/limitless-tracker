@@ -525,6 +525,20 @@ a.crow:hover { background: var(--accent-soft); }
   align-items: center;
 }
 
+/*
+ * Every cell is placed by hand rather than left to flow in.
+ *
+ * "none" has no copy count to ask for, so that cell is not rendered — and with
+ * auto-placement the card and the Remove button then each slide a column left, which
+ * squeezes the card name into the 4.5rem number column and stretches Remove across the
+ * rest of the row. Naming the columns keeps a slot's shape the same whether or not the
+ * count applies to it.
+ */
+.slot-op { grid-column: 1; }
+.slot-n { grid-column: 2; }
+.slot-card { grid-column: 3; }
+.slot-del { grid-column: 4; }
+
 .slot select, .slot input, .slot button {
   font: inherit; font-size: .875rem; color: inherit; background: transparent;
   border: 1px solid var(--line); border-radius: 5px; padding: .3rem .4rem;
@@ -556,6 +570,10 @@ a.crow:hover { background: var(--accent-soft); }
 .slot-hit .spacer { flex: 1; }
 
 @media (max-width: 640px) {
+  /* Controls on one line, the card on its own beneath them. */
   .slot { grid-template-columns: 1fr 4.5rem auto; }
-  .slot-card { grid-column: 1 / -1; order: 1; }
+  .slot-op { grid-column: 1; grid-row: 1; }
+  .slot-n { grid-column: 2; grid-row: 1; }
+  .slot-del { grid-column: 3; grid-row: 1; }
+  .slot-card { grid-column: 1 / -1; grid-row: 2; }
 }
