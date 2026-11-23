@@ -474,17 +474,50 @@ the first two characters of the handle, so a lookup is a single small request.
 The site imports `search.js`, the same module the index was built with, so the client and
 the data cannot drift apart.
 
-The index is keyed on **every two-character substring** of the handle and of each word of
-each name, not just the leading pair, so the site matches substrings anywhere the CLI does
-— `essica` finds "Jessica", `alderon` finds `@josecalderon77`. Indexing only prefixes put
-those players in a bucket the query never looked in. N-grams are split per word so they
-never straddle a space; a multi-word query still resolves, because the bucket comes from
-the first two characters typed.
+The index is keyed on **every two-character substring** of the handle and of each name,
+not just the leading pair, so the site matches substrings anywhere the CLI does —
+`essica` finds "Jessica", `alderon` finds `@josecalderon77`. Indexing only prefixes put
+those players in a bucket the query never looked in.
 
 This costs about 7.6x the index size (3.4 MB against 449 KB at the current corpus). The
 distribution is very skewed but the shape is fine: the median bucket is 0.7 KB and the
 hottest — `an` — is 56 KB, and a bucket is fetched once and then cached. Queries shorter
 than two characters are rejected outright, since they cannot address a bucket.
+
+### Searching for a name you cannot spell
+
+Both sides of every comparison — what is indexed and what is typed — go through
+`normalize` first, which folds to lower-case ASCII letters and digits and drops
+everything else. Accents are split off their letters rather than deleted with them, so
+`José` keeps its `jose`. Punctuation and spacing are removed outright rather than turned
+into separators, and that is the part that does the work: a name's own apostrophes and
+hyphens stop standing between it and someone who typed it without them.
+
+| typed | finds |
+|---|---|
+| `lillies` | Lillie's Determination |
+| `hooh`, `ho oh`, `ho-oh` | Ho-Oh ex |
+| `farfetchd` | Farfetch'd |
+| `pokegear 3.0`, `pokegear30` | Pokégear 3.0 |
+| `jose`, `josé` | José García |
+| `meg114`, `meg-114` | MEG-114 |
+
+Closing up the spaces is also why index pairs now run across them: `liesdet` has to
+resolve to a bucket that "Lillie's Determination" is in. That costs **9.2%** more index
+over 2,000 realistic names, which is the price of the whole feature.
+
+Anything still unmatched gets a second pass, and only then, because a typo is the
+likeliest explanation for an empty list but a poor explanation for a short one. It scores
+each entry by the fewest edits between the query and any run inside one of its names —
+one edit allowed from four characters, two from eight, nothing below four, where almost
+every name is one edit from almost every other. `lilies`, `determinaton` and
+`boss orders` all land this way, and the page says it is showing the closest rather than
+passing them off as what was asked for.
+
+A slip in the **first two characters** is the one case comparison cannot rescue, because
+those characters choose the bucket. So the second pass also opens the buckets addressed
+by the next few pairs of the query: `xillies` still shares `il` with its target. Measured
+at 3–8 ms over a 600-entry bucket, and never reached while anything matched outright.
 
 ### Card images
 

@@ -1,4 +1,4 @@
-import { entryTerms, matchesEntry, shard } from './search.js';
+import { entryTerms, entryWords, normalize, searchIndex, shard } from './search.js';
 
 /* ── data sources ─────────────────────────────────────────────────────────── */
 
@@ -126,30 +126,53 @@ function readRangeForm(form) {
  * word somewhere in the middle.
  */
 function relevance(entry, term) {
+    const t = normalize(term);
     const names = entryTerms(entry);
 
     let score = 0;
-    if (names.some((n) => n === term)) score += 100;
-    else if (names.some((n) => n.startsWith(term))) score += 50;
-    else if (names.some((n) => n.split(/[^a-z0-9]+/).includes(term))) score += 25;
+    if (names.some((n) => n === t)) score += 100;
+    else if (names.some((n) => n.startsWith(t))) score += 50;
+    // Folding closes up the spaces, so the whole-word tier needs the words themselves.
+    else if (entryWords(entry).includes(t)) score += 25;
 
     return score;
 }
 
+/**
+ * Entries matching what was typed, best first.
+ *
+ * Both search boxes read the same published buckets and differ only in which kind of
+ * entry they keep, so fetching, comparing and ranking live here once.
+ *
+ * `corrected` means the exact pass found nothing and these are near misses instead,
+ * which a page has to say out loud rather than hand back as what was asked for.
+ */
+async function lookup(term, keep, limit) {
+    const { hits, corrected } = await searchIndex(
+        (key) => getJson(`data/search/${key}.json`), term, keep);
+
+    // Near misses come back ordered by how near they are; re-ranking throws that away.
+    const t = normalize(term);
+    const ranked = corrected
+        ? hits
+        : hits.sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events);
+    return { hits: ranked.slice(0, limit), corrected };
+}
+
+/** Said above results that are the closest thing to a query nothing matched outright. */
+const correctedNote = (term) =>
+    `<p class="muted note">Nothing matches “${esc(term)}” exactly — showing the closest.</p>`;
+
 async function runSearch(term) {
-    const t = term.trim().toLowerCase();
-    if (t.length < 2) {
+    const t = term.trim();
+    if (normalize(t).length < 2) {
         view.innerHTML = `<p class="empty">Type at least two characters.</p>`;
         return;
     }
     // Players only. Decks and cards each have their own page and their own box: one
     // index still holds all three, but mixing 133 archetypes and 2,160 card names into
     // these results buries the person someone actually came to find.
-    const bucket = await getJson(`data/search/${shard(t)}.json`);
-    const hits = (bucket ?? [])
-        .filter((e) => !e.type && matchesEntry(e, t))
-        .sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events)
-        .slice(0, 60);
+    const { hits, corrected } = await lookup(t, (e) => !e.type, 60);
 
     if (hits.length === 0) {
         view.innerHTML = `<p class="empty">No players matching “${esc(term)}”.</p>`;
@@ -157,6 +180,7 @@ async function runSearch(term) {
     }
 
     view.innerHTML = `
+      ${corrected ? correctedNote(term) : ''}
       <div class="results">${hits
         .map((e) => {
             // Surface that a player has used other names, so a hit on an outdated one
@@ -831,13 +855,7 @@ async function renderArchetype(id, preselectVariant = null) {
  * the identical resolution — a typed name or set code to the page that holds the data.
  */
 async function searchCards(term, limit) {
-    const t = String(term).trim().toLowerCase();
-    if (t.length < 2) return [];
-    const bucket = await getJson(`data/search/${shard(t)}.json`);
-    return (bucket ?? [])
-        .filter((e) => e.type === 'card' && matchesEntry(e, t))
-        .sort((a, b) => relevance(b, t) - relevance(a, t) || b.events - a.events)
-        .slice(0, limit);
+    return lookup(String(term).trim(), (e) => e.type === 'card', limit);
 }
 
 /**
@@ -858,16 +876,16 @@ async function renderCardSearch(initial = '') {
     const cq = document.getElementById('cq');
 
     const run = async (term) => {
-        const t = term.trim().toLowerCase();
-        if (t.length < 2) {
+        const t = term.trim();
+        if (normalize(t).length < 2) {
             box.innerHTML = `<p class="empty">Type at least two characters.</p>`;
             return;
         }
-        const hits = await searchCards(t, 80);
+        const { hits, corrected } = await searchCards(t, 80);
 
         box.innerHTML = hits.length === 0
             ? `<p class="empty">No cards matching “${esc(term)}”.</p>`
-            : `<div class="results">${hits.map((e) => `
+            : (corrected ? correctedNote(term) : '') + `<div class="results">${hits.map((e) => `
                 <a class="result" href="#/c/${encodeURIComponent(e.handle)}">
                   <img class="mini-card" src="${esc(cardImage(...e.handle.split('-')))}" alt="" loading="lazy">
                   <span class="name">${esc(e.name)}</span>
@@ -952,8 +970,10 @@ async function renderArchetypeList() {
         document.getElementById('adeck-range').innerHTML =
             custom ? customRangeForm('adeck-form', custom) : '';
 
-        const t = dq.value.trim().toLowerCase();
-        const matches = (e) => !t || e.id.includes(t) || e.name.toLowerCase().includes(t);
+        // Folded the same way as the search boxes, so an archetype is reachable whether
+        // or not its id's hyphens are typed: "charizardpidgeot" finds Charizard Pidgeot.
+        const t = normalize(dq.value);
+        const matches = (e) => !t || normalize(e.id).includes(t) || normalize(e.name).includes(t);
 
         let rows;
         let shown;
@@ -1374,7 +1394,7 @@ async function renderFind(initial = []) {
             let t;
             const show = async () => {
                 s.q = q.value;
-                const found = await searchCards(q.value, 8);
+                const { hits: found } = await searchCards(q.value, 8);
                 if (!found.length) { hits.hidden = true; return; }
                 hits.hidden = false;
                 hits.innerHTML = found.map((e) => `
