@@ -244,10 +244,15 @@ export async function searchIndex(fetchBucket, term, keep = () => true) {
     // In parallel: three round trips in series is a visible pause on a slow connection,
     // and these are only ever opened when there is nothing to show yet anyway.
     await Promise.all(probeBuckets(t).map(take));
+    // Nearest first, and the most played of the equally near. That second half used to
+    // come out right by accident: published buckets are already written most-played
+    // first and sort is stable, so ties held their order. That only holds while every
+    // tied entry came from one bucket, which stopped being true the moment this started
+    // opening more than one of them.
     const near = [...pool.values()]
         .map((entry) => ({ entry, distance: nearMiss(entry, t) }))
         .filter((r) => r.distance !== null)
-        .sort((a, b) => a.distance - b.distance)
+        .sort((a, b) => a.distance - b.distance || b.entry.events - a.entry.events)
         .map((r) => r.entry);
     return { hits: near, corrected: near.length > 0 };
 }
